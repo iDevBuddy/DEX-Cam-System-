@@ -160,23 +160,32 @@ def llm_report(stats: dict) -> str | None:
 
     or_key = env("OPENROUTER_API_KEY")
     if or_key:
-        try:
-            r = httpx.post(
-                OPENROUTER_URL,
-                headers={"Authorization": f"Bearer {or_key}"},
-                json={
-                    "model": env("OPENROUTER_MODEL", "google/gemma-4-31b-it:free"),
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 700,
-                },
-                timeout=45,
-            )
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            if text:
-                return text
-        except Exception:
-            pass  # fall through
+        # Free-tier models get rate-limited (429); try each until one answers.
+        models = [m.strip() for m in env(
+            "OPENROUTER_MODEL", "google/gemma-4-31b-it:free"
+        ).split(",") if m.strip()]
+        for fallback in ["google/gemma-4-26b-a4b-it:free",
+                         "meta-llama/llama-3.3-70b-instruct:free"]:
+            if fallback not in models:
+                models.append(fallback)
+        for model in models:
+            try:
+                r = httpx.post(
+                    OPENROUTER_URL,
+                    headers={"Authorization": f"Bearer {or_key}"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 700,
+                    },
+                    timeout=45,
+                )
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"]["content"].strip()
+                if text:
+                    return text
+            except Exception:
+                continue  # next model
 
     g_key = env("GEMINI_API_KEY")
     if g_key:
