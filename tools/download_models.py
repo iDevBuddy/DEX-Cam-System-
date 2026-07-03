@@ -4,6 +4,8 @@ from urllib.request import urlretrieve
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 MODELS = {
+    "yolo11n.pt":
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
     "yolov8n.pt":
         "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt",
     "pose_landmarker_lite.task":

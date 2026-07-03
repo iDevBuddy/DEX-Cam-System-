@@ -75,13 +75,17 @@ def build_stats(hours: float = 12.0) -> dict:
            FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC LIMIT 15""",
         (since,),
     ):
+        mins = dur / 60
+        act_min = mins * (act or 0) / 100
         workers.append({
             "worker": f"W{tid}",
             "camera": cam,
             "from": datetime.fromtimestamp(start).strftime("%H:%M"),
             "to": datetime.fromtimestamp(end).strftime("%H:%M"),
-            "minutes": round(dur / 60, 1),
+            "minutes": round(mins, 1),
             "active_pct": act,
+            "active_min": round(act_min, 1),
+            "idle_min": round(mins - act_min, 1),
             "posture": posture or "unknown",
         })
 
@@ -135,7 +139,8 @@ def render_template(stats: dict) -> str:
         for wk in workers:
             lines.append(
                 f"  {wk['worker']:<5} {wk['camera']:<16} {wk['from']}-{wk['to']}  "
-                f"{wk['minutes']:>5} min  active {wk['active_pct']:>5}%  {wk['posture']}"
+                f"{wk['minutes']:>5} min (active {wk['active_min']}, "
+                f"idle {wk['idle_min']})  {wk['posture']}"
             )
     lines += ["", "-" * 55,
               "DEX AI Monitoring System — automated report."]

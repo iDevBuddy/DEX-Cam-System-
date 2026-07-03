@@ -111,11 +111,17 @@ def recent_sessions(limit: int = 30) -> list[dict]:
         "FROM sessions ORDER BY end_ts DESC LIMIT ?",
         (limit,),
     )
-    return [
-        {"camera": r[0], "worker": f"W{r[1]}", "start": r[2], "end": r[3],
-         "minutes": round(r[4] / 60, 1), "active_pct": r[5], "posture": r[6]}
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        mins = r[4] / 60
+        act_min = mins * (r[5] or 0) / 100
+        out.append(
+            {"camera": r[0], "worker": f"W{r[1]}", "start": r[2], "end": r[3],
+             "minutes": round(mins, 1), "active_pct": r[5],
+             "active_min": round(act_min, 1), "idle_min": round(mins - act_min, 1),
+             "posture": r[6]}
+        )
+    return out
 
 
 def history(minutes: int = 60) -> list[dict]:

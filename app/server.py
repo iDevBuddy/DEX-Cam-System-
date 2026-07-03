@@ -198,18 +198,21 @@ def worker_report(wid: str, hours: float = 12.0):
     lines.append("")
     if rows:
         lines.append(f"VISIT HISTORY (last {hours:g}h):")
-        total_min = 0.0
+        total_min = total_act = 0.0
         for cam, start, end, dur, act, posture in rows:
-            total_min += dur / 60
+            mins = dur / 60
+            act_min = mins * (act or 0) / 100
+            total_min += mins
+            total_act += act_min
             lines.append(
                 f"  {cam}: {datetime.fromtimestamp(start).strftime('%H:%M')}-"
                 f"{datetime.fromtimestamp(end).strftime('%H:%M')} "
-                f"({dur/60:.1f} min, {act}% active"
+                f"({mins:.1f} min: {act_min:.1f} active, {mins - act_min:.1f} idle"
                 + (f", mostly {posture}" if posture else "") + ")"
             )
-        avg_act = sum(r[4] for r in rows) / len(rows)
-        lines += ["", f"TOTAL: {len(rows)} visit(s), {total_min:.1f} min, "
-                      f"avg {avg_act:.0f}% active"]
+        lines += ["", f"TOTAL: {len(rows)} visit(s), {total_min:.1f} min — "
+                      f"active {total_act:.1f} min, idle {total_min - total_act:.1f} min "
+                      f"({100 * total_act / total_min:.0f}% active)" if total_min else ""]
     else:
         lines.append(f"No completed visits recorded in the last {hours:g}h.")
 

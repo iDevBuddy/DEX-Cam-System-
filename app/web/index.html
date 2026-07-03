@@ -225,7 +225,7 @@ function renderSessions(sessions){
   box.innerHTML = sessions.map(s=>`
     <div class="sess">
       <span class="wid">${s.worker}</span>
-      <span class="meta">${s.camera} · ${fmtTime(s.start)}–${fmtTime(s.end)} · ${s.minutes} min${s.posture ? ' · '+s.posture : ''}</span>
+      <span class="meta">${s.camera} · ${fmtTime(s.start)}–${fmtTime(s.end)} · ${s.minutes} min (${s.active_min} act / ${s.idle_min} idle)${s.posture ? ' · '+s.posture : ''}</span>
       <span class="apc ${s.active_pct>=50?'hi':'lo'}">${s.active_pct}%</span>
     </div>`).join('');
 }
