@@ -16,21 +16,25 @@ class AlertManager:
         self.cooldown = float(cfg.get("cooldown_seconds", 60))
         self.phone_cooldown = float(cfg.get("phone_cooldown_seconds", 30))
         self.unmanned_after = float(cfg.get("unmanned_after_seconds", 120))
+        self.idle_worker_after = float(cfg.get("idle_worker_seconds", 60))
+        self.idle_worker_cooldown = float(cfg.get("idle_worker_cooldown_seconds", 300))
         self.last_fired: dict[str, float] = {}
         self.last_occupied = time.monotonic()
 
-    def _fire(self, alert_type: str, message: str, frame, cooldown: float):
+    def _fire(self, alert_type: str, message: str, frame, cooldown: float,
+              key: str | None = None):
         now = time.monotonic()
-        if now - self.last_fired.get(alert_type, -1e9) < cooldown:
+        key = key or alert_type
+        if now - self.last_fired.get(key, -1e9) < cooldown:
             return
-        self.last_fired[alert_type] = now
+        self.last_fired[key] = now
         snapshot = self._save_snapshot(alert_type, frame)
         db.log_alert(self.camera, alert_type, message, snapshot)
 
     def _save_snapshot(self, alert_type: str, frame) -> str | None:
         try:
             SNAP_DIR.mkdir(parents=True, exist_ok=True)
-            name = f"{int(time.time())}_{self.camera}_{alert_type}.jpg"
+            name = f"{int(time.time() * 1000)}_{self.camera}_{alert_type}.jpg"
             cv2.imwrite(str(SNAP_DIR / name), frame)
             return name
         except Exception:
@@ -62,3 +66,12 @@ class AlertManager:
                 f"Mobile phone detected on '{self.camera}'",
                 frame, self.phone_cooldown,
             )
+
+    def fire_idle_worker(self, track_id: int, idle_seconds: int, frame):
+        """Photo evidence of a worker who has been idle past the threshold.
+        Per-worker cooldown so one sleepy worker doesn't flood the log."""
+        self._fire(
+            "idle_worker",
+            f"Worker W{track_id} idle for {idle_seconds}s on '{self.camera}'",
+            frame, self.idle_worker_cooldown, key=f"idle_w{track_id}",
+        )

@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS alerts (
     snapshot  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts (ts);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    camera     TEXT NOT NULL,
+    track_id   INTEGER NOT NULL,
+    start_ts   REAL NOT NULL,
+    end_ts     REAL NOT NULL,
+    duration   REAL NOT NULL,       -- seconds
+    active_pct REAL NOT NULL,
+    posture    TEXT                 -- dominant: 'standing' | 'sitting' | NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_end ON sessions (end_ts);
 """
 
 
@@ -83,6 +94,41 @@ def log_alert(camera: str, alert_type: str, message: str, snapshot: str | None):
         "INSERT INTO alerts (ts, camera, type, message, snapshot) VALUES (?,?,?,?,?)",
         (time.time(), camera, alert_type, message, snapshot),
     ))
+
+
+def log_session(camera: str, track_id: int, start_ts: float, end_ts: float,
+                duration: float, active_pct: float, posture: str | None = None):
+    _write_q.put((
+        "INSERT INTO sessions (camera, track_id, start_ts, end_ts, duration, active_pct, posture) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (camera, int(track_id), start_ts, end_ts, duration, active_pct, posture),
+    ))
+
+
+def recent_sessions(limit: int = 30) -> list[dict]:
+    rows = query(
+        "SELECT camera, track_id, start_ts, end_ts, duration, active_pct, posture "
+        "FROM sessions ORDER BY end_ts DESC LIMIT ?",
+        (limit,),
+    )
+    return [
+        {"camera": r[0], "worker": f"W{r[1]}", "start": r[2], "end": r[3],
+         "minutes": round(r[4] / 60, 1), "active_pct": r[5], "posture": r[6]}
+        for r in rows
+    ]
+
+
+def history(minutes: int = 60) -> list[dict]:
+    """Per-minute total workers across all cameras (sum of per-camera averages)."""
+    since = time.time() - minutes * 60
+    rows = query(
+        """SELECT bucket, SUM(avg_w) FROM (
+             SELECT CAST(ts/60 AS INTEGER)*60 AS bucket, camera, AVG(workers) AS avg_w
+             FROM observations WHERE ts >= ? GROUP BY bucket, camera
+           ) GROUP BY bucket ORDER BY bucket""",
+        (since,),
+    )
+    return [{"t": r[0], "workers": round(r[1] or 0, 1)} for r in rows]
 
 
 def query(sql: str, params: tuple = ()) -> list[tuple]:

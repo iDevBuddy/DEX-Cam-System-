@@ -1,4 +1,4 @@
-# DEX AI — Worker Monitoring System (Demo)
+# DEX AI — Monitoring System
 
 AI-powered factory worker monitoring using your **existing CCTV cameras**.
 Connect any Hikvision (or ONVIF) NVR/DVR via RTSP and watch live:
@@ -10,9 +10,9 @@ Connect any Hikvision (or ONVIF) NVR/DVR via RTSP and watch live:
 - 📊 **Live web dashboard** — all cameras, counts, and alert log in one screen
 - 📧 **AI-written shift reports** — one click, emailed to you
 
-> **This is a demo build.** The production system (Phase 1) adds pose-based
-> activity analysis, 13-camera GPU pipeline, TimescaleDB analytics, scheduled
-> PDF shift reports, Telegram alerts, and 24/7 on-premises deployment.
+> The full production deployment (Phase 1) extends this with a 13-camera GPU
+> pipeline, TimescaleDB analytics, scheduled PDF shift reports, Telegram
+> alerts, and 24/7 on-premises operation.
 
 ---
 
@@ -30,15 +30,18 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows   (Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 
-# 3. Download the AI model + generate offline test video (one time)
+# 3. Download the AI models + generate offline test video (one time)
 python tools/download_models.py
 python tools/make_sample.py
 
-# 4. Run
+# 4. Create your config
+copy config.example.yaml config.yaml     # Linux: cp config.example.yaml config.yaml
+
+# 5. Run
 python main.py
 ```
 
-Open **http://localhost:8000** — the dashboard starts with a built-in demo video.
+Open **http://localhost:8000** — the dashboard starts with built-in sample footage.
 
 ## Connecting Your Hikvision Cameras
 
@@ -100,4 +103,4 @@ is used automatically when available; otherwise runs on CPU.
 
 ---
 
-**DEX AI** · Worker Monitoring Demo · Built as a preview of the Phase 1 system
+**DEX AI** · Monitoring System

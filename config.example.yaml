@@ -1,0 +1,32 @@
+# DEX AI Monitoring System — configuration
+# Copy this file to config.yaml and edit your cameras.
+# Cameras can also be added live from the dashboard (they get saved to config.yaml).
+
+inference:
+  model: models/yolov8n.pt
+  confidence: 0.25
+  infer_fps: 4          # frames analyzed per second per camera (CPU-friendly)
+  imgsz: 416            # 640 on GPU builds
+
+activity:
+  idle_after_seconds: 10
+  movement_window: 3.0
+  movement_threshold: 0.015
+  use_pose: true        # MediaPipe sitting/standing (auto-off if unavailable)
+
+alerts:
+  cooldown_seconds: 60
+  phone_cooldown_seconds: 30
+  unmanned_after_seconds: 120
+  idle_worker_seconds: 60          # idle this long => photo alert
+  idle_worker_cooldown_seconds: 300
+
+cameras:
+- name: sample-video
+  source: sample.mp4    # RTSP URL | video file path | 0 for webcam
+  max_workers: 3        # overcrowding alert above this count
+  zone:                 # work zone polygon, normalized 0..1 coords
+  - [0.03, 0.1]
+  - [0.97, 0.1]
+  - [0.97, 0.97]
+  - [0.03, 0.97]

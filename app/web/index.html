@@ -49,9 +49,15 @@
   .alert img{width:74px;height:46px;object-fit:cover;border-radius:6px;background:#000}
   .alert .t{font-size:12px}
   .alert .ty{font-weight:700;font-size:11px;text-transform:uppercase}
-  .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)} .ty.unmanned{color:var(--cyan)}
+  .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)} .ty.unmanned{color:var(--cyan)} .ty.idle_worker{color:var(--orange)}
   .alert .tm{color:var(--dim);font-size:11px}
   .empty{color:var(--dim);font-size:13px;text-align:center;padding:14px 0}
+  #sessions{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+  .sess{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px}
+  .sess .wid{font-weight:700;color:var(--cyan);min-width:34px}
+  .sess .meta{color:var(--dim)}
+  .sess .apc{margin-left:auto;font-weight:700}
+  .apc.hi{color:var(--green)} .apc.lo{color:var(--orange)}
   /* modal */
   #modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:50}
   #modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:640px;width:92%;max-height:82vh;display:flex;flex-direction:column}
@@ -66,7 +72,7 @@
 
 <header>
   <div class="logo">DEX <span>AI</span></div>
-  <div class="tag">Worker Monitoring — Demo</div>
+  <div class="tag">Monitoring System</div>
   <div class="spacer"></div>
   <span id="device" class="tag"></span>
   <button id="btnReport">Generate Report</button>
@@ -91,6 +97,22 @@
       <div class="field"><label>Max workers (overcrowding limit)</label><input id="fMax" type="number" value="3" min="1"></div>
       <button id="btnAdd" style="width:100%">Connect camera</button>
       <div class="hint">Source = Hikvision RTSP URL, video file path, or <b>0</b> for webcam.</div>
+    </div>
+    <div class="panel">
+      <h3>Worker report</h3>
+      <div style="display:flex;gap:8px">
+        <input id="fWorker" placeholder="W3" style="flex:1">
+        <button id="btnWorker">Report</button>
+      </div>
+      <div class="hint">Worker ka number likho (video pe box ke upar dikhta hai)</div>
+    </div>
+    <div class="panel">
+      <h3>Workers — last 60 min</h3>
+      <canvas id="chart" width="300" height="90" style="width:100%"></canvas>
+    </div>
+    <div class="panel">
+      <h3>Worker visits</h3>
+      <div id="sessions"><div class="empty">No visits recorded yet</div></div>
     </div>
     <div class="panel">
       <h3>Live alerts</h3>
@@ -190,15 +212,83 @@ $('btnReport').onclick = async ()=>{
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({hours:12})});
     const d = await r.json();
     $('mBody').textContent = d.report;
-    $('mTitle').textContent = 'Shift Report' + (d.source==='gemini' ? ' — written by AI' : '');
+    $('mTitle').textContent = 'Shift Report' + (d.source==='ai' ? ' — written by AI' : '');
     $('mFoot').textContent = d.email_status + '  ·  saved: reports/' + d.file;
     modal.style.display = 'flex';
   }catch(e){ toast('Report failed: '+e); }
   $('btnReport').disabled = false; $('btnReport').textContent = 'Generate Report';
 };
 
+function renderSessions(sessions){
+  const box = $('sessions');
+  if(!sessions.length){ box.innerHTML='<div class="empty">No visits recorded yet</div>'; return; }
+  box.innerHTML = sessions.map(s=>`
+    <div class="sess">
+      <span class="wid">${s.worker}</span>
+      <span class="meta">${s.camera} · ${fmtTime(s.start)}–${fmtTime(s.end)} · ${s.minutes} min${s.posture ? ' · '+s.posture : ''}</span>
+      <span class="apc ${s.active_pct>=50?'hi':'lo'}">${s.active_pct}%</span>
+    </div>`).join('');
+}
+
+function drawChart(points){
+  const cv = $('chart'), ctx = cv.getContext('2d');
+  ctx.clearRect(0,0,cv.width,cv.height);
+  const css = getComputedStyle(document.documentElement);
+  const cyan = css.getPropertyValue('--cyan').trim();
+  const dim  = css.getPropertyValue('--dim').trim();
+  if(points.length < 2){
+    ctx.fillStyle = dim; ctx.font = '11px sans-serif';
+    ctx.fillText('Collecting data...', 100, 50);
+    return;
+  }
+  const W=cv.width, H=cv.height, pad=14;
+  const maxY = Math.max(2, ...points.map(p=>p.workers));
+  const x = i => pad + (W-2*pad) * i/(points.length-1);
+  const y = v => H-pad - (H-2*pad) * v/maxY;
+  // grid line + max label
+  ctx.strokeStyle = 'rgba(139,152,169,.25)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(pad, y(maxY)); ctx.lineTo(W-pad, y(maxY)); ctx.stroke();
+  ctx.fillStyle = dim; ctx.font='10px sans-serif';
+  ctx.fillText(maxY, 2, y(maxY)+3); ctx.fillText('0', 2, y(0)+3);
+  // area fill
+  ctx.beginPath(); ctx.moveTo(x(0), y(0));
+  points.forEach((p,i)=>ctx.lineTo(x(i), y(p.workers)));
+  ctx.lineTo(x(points.length-1), y(0)); ctx.closePath();
+  ctx.fillStyle = 'rgba(57,195,212,.15)'; ctx.fill();
+  // line
+  ctx.beginPath();
+  points.forEach((p,i)=> i? ctx.lineTo(x(i), y(p.workers)) : ctx.moveTo(x(i), y(p.workers)));
+  ctx.strokeStyle = cyan; ctx.lineWidth = 1.6; ctx.stroke();
+}
+
+async function refreshSlow(){
+  try{
+    const [sessions, hist] = await Promise.all([
+      fetch('/api/sessions?limit=20').then(r=>r.json()),
+      fetch('/api/history?minutes=60').then(r=>r.json()),
+    ]);
+    renderSessions(sessions);
+    drawChart(hist);
+  }catch(e){}
+}
+
+$('btnWorker').onclick = async ()=>{
+  const wid = $('fWorker').value.trim();
+  if(!wid){ toast('Worker number likho, e.g. W3'); return; }
+  const r = await fetch('/api/worker/'+encodeURIComponent(wid));
+  if(!r.ok){ const e = await r.json(); toast(e.detail||'Failed'); return; }
+  const d = await r.json();
+  $('mBody').textContent = d.report;
+  $('mTitle').textContent = 'Worker ' + d.worker;
+  $('mFoot').textContent = 'DEX AI Monitoring System';
+  modal.style.display = 'flex';
+};
+$('fWorker').addEventListener('keydown', e=>{ if(e.key==='Enter') $('btnWorker').click(); });
+
 refresh();
+refreshSlow();
 setInterval(refresh, 2000);
+setInterval(refreshSlow, 10000);
 </script>
 </body>
 </html>

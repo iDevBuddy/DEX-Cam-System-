@@ -14,7 +14,7 @@ from .zones import Zone
 ROOT = Path(__file__).resolve().parent
 DEFAULT_ZONE = [[0.03, 0.1], [0.97, 0.1], [0.97, 0.97], [0.03, 0.97]]
 
-app = FastAPI(title="DEX AI Monitoring Demo")
+app = FastAPI(title="DEX AI Monitoring System")
 workers: dict[str, CameraWorker] = {}
 cfg: dict = {}
 
@@ -59,6 +59,7 @@ def list_cameras():
             "source": w.source_str,
             "status": w.status,
             "max_workers": w.zone.max_workers,
+            "live_ids": [f"W{t}" for t in sorted(w.live)],
             **w.counts,
         }
         for w in workers.values()
@@ -117,6 +118,16 @@ def alerts(limit: int = 30):
     return db.recent_alerts(limit)
 
 
+@app.get("/api/sessions")
+def sessions(limit: int = 30):
+    return db.recent_sessions(limit)
+
+
+@app.get("/api/history")
+def history(minutes: int = 60):
+    return db.history(minutes)
+
+
 @app.get("/snapshots/{fname}")
 def snapshot(fname: str):
     path = (SNAP_DIR / fname).resolve()
@@ -151,3 +162,55 @@ class ReportIn(BaseModel):
 @app.post("/api/report")
 def make_report(req: ReportIn):
     return report.generate(req.hours, req.email_to)
+
+
+@app.get("/api/worker/{wid}")
+def worker_report(wid: str, hours: float = 12.0):
+    """Everything we know about one worker ID: where they are right now,
+    plus their visit history."""
+    try:
+        tid = int(wid.upper().lstrip("W"))
+    except ValueError:
+        raise HTTPException(400, "Worker id looks like: W3 or 3")
+
+    from datetime import datetime
+    lines = [f"WORKER W{tid} — REPORT", ""]
+
+    # Live status across all cameras
+    now_lines = []
+    for w in workers.values():
+        info = w.live.get(tid)
+        if info:
+            posture = f", {info['posture']}" if info["posture"] else ""
+            now_lines.append(
+                f"  RIGHT NOW on '{w.cam_name}': {info['state'].upper()}{posture}"
+            )
+    lines += now_lines if now_lines else ["  Not visible on any camera right now."]
+
+    # Visit history
+    import time as _t
+    rows = db.query(
+        """SELECT camera, start_ts, end_ts, duration, active_pct, posture
+           FROM sessions WHERE track_id = ? AND end_ts >= ?
+           ORDER BY end_ts DESC LIMIT 10""",
+        (tid, _t.time() - hours * 3600),
+    )
+    lines.append("")
+    if rows:
+        lines.append(f"VISIT HISTORY (last {hours:g}h):")
+        total_min = 0.0
+        for cam, start, end, dur, act, posture in rows:
+            total_min += dur / 60
+            lines.append(
+                f"  {cam}: {datetime.fromtimestamp(start).strftime('%H:%M')}-"
+                f"{datetime.fromtimestamp(end).strftime('%H:%M')} "
+                f"({dur/60:.1f} min, {act}% active"
+                + (f", mostly {posture}" if posture else "") + ")"
+            )
+        avg_act = sum(r[4] for r in rows) / len(rows)
+        lines += ["", f"TOTAL: {len(rows)} visit(s), {total_min:.1f} min, "
+                      f"avg {avg_act:.0f}% active"]
+    else:
+        lines.append(f"No completed visits recorded in the last {hours:g}h.")
+
+    return {"worker": f"W{tid}", "report": "\n".join(lines)}

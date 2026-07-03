@@ -3,16 +3,20 @@ Always works: no API key => template report; no SMTP => saved to reports/ only."
 import smtplib
 import time
 from datetime import datetime
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
 import httpx
 
 from . import db
+from .alerts import SNAP_DIR
 from .config import env
 
 REPORT_DIR = Path(__file__).resolve().parent.parent / "reports"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def build_stats(hours: float = 12.0) -> dict:
@@ -38,16 +42,60 @@ def build_stats(hours: float = 12.0) -> dict:
         (since,),
     ):
         cams.setdefault(cam, {"alerts": {}})["alerts"][atype] = n
+
+    # Worker visit sessions per camera
+    for cam, visits, avg_min, avg_act in db.query(
+        """SELECT camera, COUNT(*), AVG(duration)/60.0, AVG(active_pct)
+           FROM sessions WHERE end_ts >= ? GROUP BY camera""",
+        (since,),
+    ):
+        cams.setdefault(cam, {"alerts": {}})["visits"] = {
+            "count": visits,
+            "avg_stay_min": round(avg_min or 0, 1),
+            "avg_active_pct": round(avg_act or 0, 1),
+        }
+
+    # Hour-by-hour breakdown per camera (local time)
+    for cam, hour, avg_w, act, idl in db.query(
+        """SELECT camera, strftime('%H:00', ts, 'unixepoch', 'localtime') AS hr,
+                  AVG(workers), SUM(active), SUM(idle)
+           FROM observations WHERE ts >= ? GROUP BY camera, hr ORDER BY hr""",
+        (since,),
+    ):
+        total = (act or 0) + (idl or 0)
+        cams.setdefault(cam, {"alerts": {}}).setdefault("hourly", []).append({
+            "hour": hour,
+            "avg_workers": round(avg_w or 0, 1),
+            "active_pct": round(100 * (act or 0) / total, 1) if total else 0.0,
+        })
+    # Recent individual worker sessions (most recent first)
+    workers = []
+    for cam, tid, start, end, dur, act, posture in db.query(
+        """SELECT camera, track_id, start_ts, end_ts, duration, active_pct, posture
+           FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC LIMIT 15""",
+        (since,),
+    ):
+        workers.append({
+            "worker": f"W{tid}",
+            "camera": cam,
+            "from": datetime.fromtimestamp(start).strftime("%H:%M"),
+            "to": datetime.fromtimestamp(end).strftime("%H:%M"),
+            "minutes": round(dur / 60, 1),
+            "active_pct": act,
+            "posture": posture or "unknown",
+        })
+
     return {
         "window_hours": hours,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "cameras": cams,
+        "workers": workers,
     }
 
 
 def render_template(stats: dict) -> str:
     lines = [
-        "DEX AI — WORKER MONITORING REPORT (DEMO)",
+        "DEX AI — MONITORING SYSTEM REPORT",
         f"Generated: {stats['generated_at']}   Window: last {stats['window_hours']:g} hours",
         "=" * 55,
     ]
@@ -62,55 +110,138 @@ def render_template(stats: dict) -> str:
             f"  Active time        : {s.get('active_pct', 0)}%",
             f"  Idle time          : {s.get('idle_pct', 0)}%",
         ]
+        v = s.get("visits")
+        if v:
+            lines.append(
+                f"  Worker visits      : {v['count']} "
+                f"(avg stay {v['avg_stay_min']} min, avg active {v['avg_active_pct']}%)"
+            )
         alerts = s.get("alerts", {})
         if alerts:
             lines.append("  Alerts: " + ", ".join(f"{k}={v}" for k, v in alerts.items()))
         else:
             lines.append("  Alerts: none")
+        hourly = s.get("hourly") or []
+        if hourly:
+            lines.append("  Hour-by-hour:")
+            for hb in hourly:
+                lines.append(
+                    f"    {hb['hour']}  avg workers {hb['avg_workers']:<4}  "
+                    f"active {hb['active_pct']}%"
+                )
+    workers = stats.get("workers") or []
+    if workers:
+        lines += ["", "WORKER DETAIL (recent visits)", "-" * 55]
+        for wk in workers:
+            lines.append(
+                f"  {wk['worker']:<5} {wk['camera']:<16} {wk['from']}-{wk['to']}  "
+                f"{wk['minutes']:>5} min  active {wk['active_pct']:>5}%  {wk['posture']}"
+            )
     lines += ["", "-" * 55,
-              "Demo build — Phase 1 adds pose-based activity, shift PDF reports,",
-              "historical analytics, and Telegram alerts."]
+              "DEX AI Monitoring System — automated report."]
     return "\n".join(lines)
 
 
+PROMPT = (
+    "You are the reporting module of an AI factory worker-monitoring system "
+    "built by DEX AI. Write a short, professional shift report (max 300 words) "
+    "for a factory owner in simple English based on this data. Use short "
+    "sections with clear headings. Describe individual workers by their IDs "
+    "(W1, W2...) — what they did, how long they stayed, whether they were "
+    "standing and working or sitting idle. Mention alerts, then end with one "
+    "practical recommendation. Output plain text only, no markdown symbols. "
+    "Data:\n"
+)
+
+
 def llm_report(stats: dict) -> str | None:
-    key = env("GEMINI_API_KEY")
-    if not key:
-        return None
-    prompt = (
-        "You are the reporting module of an AI factory worker-monitoring system "
-        "built by DEX AI. Write a short, professional shift report (max 250 words) "
-        "for a factory owner in simple English based on this data. Use short "
-        "sections with clear headings, mention notable idle time and alerts, and "
-        "end with one practical recommendation. Data:\n" + str(stats)
+    """OpenRouter first, Gemini second, None (=template) if both unavailable."""
+    prompt = PROMPT + str(stats)
+
+    or_key = env("OPENROUTER_API_KEY")
+    if or_key:
+        try:
+            r = httpx.post(
+                OPENROUTER_URL,
+                headers={"Authorization": f"Bearer {or_key}"},
+                json={
+                    "model": env("OPENROUTER_MODEL", "google/gemma-4-31b-it:free"),
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 700,
+                },
+                timeout=45,
+            )
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            if text:
+                return text
+        except Exception:
+            pass  # fall through
+
+    g_key = env("GEMINI_API_KEY")
+    if g_key:
+        try:
+            r = httpx.post(
+                GEMINI_URL,
+                params={"key": g_key},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=25,
+            )
+            r.raise_for_status()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception:
+            pass
+
+    return None  # template fallback
+
+
+def snapshot_attachments(hours: float, limit: int = 5) -> list[Path]:
+    """Alert snapshots worth attaching — idle workers first, newest first.
+    Missing files are skipped silently."""
+    since = time.time() - hours * 3600
+    rows = db.query(
+        """SELECT snapshot FROM alerts
+           WHERE ts >= ? AND snapshot IS NOT NULL
+           ORDER BY CASE type WHEN 'idle_worker' THEN 0 ELSE 1 END, ts DESC
+           LIMIT ?""",
+        (since, limit * 2),
     )
-    try:
-        r = httpx.post(
-            GEMINI_URL,
-            params={"key": key},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=25,
-        )
-        r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception:
-        return None  # any failure -> template fallback
+    paths = []
+    seen = set()
+    for (name,) in rows:
+        p = SNAP_DIR / name
+        if name not in seen and p.is_file():
+            seen.add(name)
+            paths.append(p)
+        if len(paths) >= limit:
+            break
+    return paths
 
 
-def send_email(subject: str, body: str, to_addr: str | None = None) -> tuple[bool, str]:
+def send_email(subject: str, body: str, to_addr: str | None = None,
+               attachments: list[Path] | None = None) -> tuple[bool, str]:
     host, user, pwd = env("EMAIL_HOST"), env("EMAIL_USER"), env("EMAIL_PASS")
     to_addr = to_addr or env("EMAIL_TO") or user
     if not (host and user and pwd and to_addr):
         return False, "Email not configured (.env) — report saved locally."
     try:
-        msg = MIMEText(body, "plain", "utf-8")
+        msg = MIMEMultipart()
         msg["Subject"] = subject
         msg["From"] = user
         msg["To"] = to_addr
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        for path in attachments or []:
+            try:
+                img = MIMEImage(path.read_bytes(), name=path.name)
+                img.add_header("Content-Disposition", "attachment", filename=path.name)
+                msg.attach(img)
+            except Exception:
+                continue  # one bad image must not kill the report email
         with smtplib.SMTP_SSL(host, int(env("EMAIL_PORT", "465")), timeout=20) as s:
             s.login(user, pwd)
             s.sendmail(user, [to_addr], msg.as_string())
-        return True, f"Report emailed to {to_addr}."
+        n = len(attachments or [])
+        return True, f"Report emailed to {to_addr}" + (f" with {n} photo(s)." if n else ".")
     except Exception as e:
         return False, f"Email failed: {e}"
 
@@ -119,12 +250,15 @@ def generate(hours: float = 12.0, email_to: str | None = None) -> dict:
     stats = build_stats(hours)
     llm_text = llm_report(stats)
     body = llm_text or render_template(stats)
-    source = "gemini" if llm_text else "template"
+    source = "ai" if llm_text else "template"
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     fname = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     (REPORT_DIR / fname).write_text(body, encoding="utf-8")
 
-    emailed, email_msg = send_email("DEX AI — Shift Monitoring Report (Demo)", body, email_to)
+    attachments = snapshot_attachments(hours)
+    emailed, email_msg = send_email("DEX AI — Shift Monitoring Report", body,
+                                    email_to, attachments)
     return {"report": body, "source": source, "file": fname,
-            "emailed": emailed, "email_status": email_msg}
+            "emailed": emailed, "email_status": email_msg,
+            "attachments": [p.name for p in attachments]}
