@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+snapshots/
+reports/
+sample.mp4
+*.log

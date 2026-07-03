@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEX AI — Monitoring</title>
+<style>
+  :root{
+    --bg:#0b0e13; --panel:#141a23; --panel2:#1b2330; --line:#242e3d;
+    --text:#e8edf4; --dim:#8b98a9; --green:#3ecf7a; --orange:#f5a623;
+    --red:#f05a5a; --cyan:#39c3d4; --accent:#4f8cff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .logo{font-size:17px;font-weight:700;letter-spacing:.4px}
+  .logo span{color:var(--accent)}
+  .tag{color:var(--dim);font-size:12px;border:1px solid var(--line);padding:2px 8px;border-radius:20px}
+  .spacer{flex:1}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer;font-size:13px}
+  button:hover{filter:brightness(1.12)}
+  button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+  .stats{display:flex;gap:12px;padding:16px 22px;flex-wrap:wrap}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 18px;min-width:130px}
+  .stat .v{font-size:24px;font-weight:700}
+  .stat .l{color:var(--dim);font-size:12px}
+  .v.green{color:var(--green)} .v.orange{color:var(--orange)} .v.red{color:var(--red)} .v.cyan{color:var(--cyan)}
+  .main{display:grid;grid-template-columns:1fr 330px;gap:16px;padding:0 22px 22px}
+  @media(max-width:1000px){.main{grid-template-columns:1fr}}
+  .cams{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-content:start}
+  .cam{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .cam img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
+  .cam .bar{display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
+  .dot.online{background:var(--green)}
+  .cam .nm{font-weight:600}
+  .cam .del{margin-left:auto;color:var(--dim);cursor:pointer;background:none;border:0;font-size:15px;padding:0 4px}
+  .cam .del:hover{color:var(--red)}
+  .side{display:flex;flex-direction:column;gap:14px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .panel h3{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:12px}
+  .field{margin-bottom:10px}
+  .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+  input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;font-size:13px}
+  input:focus{outline:1px solid var(--accent)}
+  .hint{font-size:11px;color:var(--dim);margin-top:6px}
+  #alerts{max-height:420px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+  .alert{display:flex;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px}
+  .alert img{width:74px;height:46px;object-fit:cover;border-radius:6px;background:#000}
+  .alert .t{font-size:12px}
+  .alert .ty{font-weight:700;font-size:11px;text-transform:uppercase}
+  .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)} .ty.unmanned{color:var(--cyan)}
+  .alert .tm{color:var(--dim);font-size:11px}
+  .empty{color:var(--dim);font-size:13px;text-align:center;padding:14px 0}
+  /* modal */
+  #modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:50}
+  #modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:640px;width:92%;max-height:82vh;display:flex;flex-direction:column}
+  #modal .head{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700}
+  #modal .head button{margin-left:auto}
+  #modal pre{padding:18px;overflow:auto;white-space:pre-wrap;font:12.5px/1.6 Consolas,monospace;color:var(--text)}
+  #modal .foot{padding:10px 18px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:10px 18px;border-radius:10px;display:none;z-index:60}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">DEX <span>AI</span></div>
+  <div class="tag">Worker Monitoring — Demo</div>
+  <div class="spacer"></div>
+  <span id="device" class="tag"></span>
+  <button id="btnReport">Generate Report</button>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="v" id="sCams">0</div><div class="l">Cameras online</div></div>
+  <div class="stat"><div class="v cyan" id="sWorkers">0</div><div class="l">Workers in zones</div></div>
+  <div class="stat"><div class="v green" id="sActive">0</div><div class="l">Active</div></div>
+  <div class="stat"><div class="v orange" id="sIdle">0</div><div class="l">Idle</div></div>
+  <div class="stat"><div class="v red" id="sAlerts">0</div><div class="l">Alerts (24h)</div></div>
+</div>
+
+<div class="main">
+  <div class="cams" id="cams"></div>
+
+  <div class="side">
+    <div class="panel">
+      <h3>Add camera</h3>
+      <div class="field"><label>Name</label><input id="fName" placeholder="cutting-01"></div>
+      <div class="field"><label>Source</label><input id="fSource" placeholder="rtsp://user:pass@192.168.1.100:554/Streaming/Channels/102"></div>
+      <div class="field"><label>Max workers (overcrowding limit)</label><input id="fMax" type="number" value="3" min="1"></div>
+      <button id="btnAdd" style="width:100%">Connect camera</button>
+      <div class="hint">Source = Hikvision RTSP URL, video file path, or <b>0</b> for webcam.</div>
+    </div>
+    <div class="panel">
+      <h3>Live alerts</h3>
+      <div id="alerts"><div class="empty">No alerts yet</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="modal"><div class="box">
+  <div class="head"><span id="mTitle">Shift Report</span><button class="ghost" onclick="modal.style.display='none'">Close</button></div>
+  <pre id="mBody"></pre>
+  <div class="foot" id="mFoot"></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const modal = $('modal');
+let knownCams = new Set();
+
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 3500); }
+
+function fmtTime(ts){ return new Date(ts*1000).toLocaleTimeString(); }
+
+async function refresh(){
+  try{
+    const [stats, cams, alerts] = await Promise.all([
+      fetch('/api/stats').then(r=>r.json()),
+      fetch('/api/cameras').then(r=>r.json()),
+      fetch('/api/alerts?limit=25').then(r=>r.json()),
+    ]);
+    $('sCams').textContent = stats.online + '/' + stats.cameras;
+    $('sWorkers').textContent = stats.workers;
+    $('sActive').textContent = stats.active;
+    $('sIdle').textContent = stats.idle;
+    $('sAlerts').textContent = stats.alerts_24h;
+    $('device').textContent = 'engine: ' + stats.device.toUpperCase();
+    renderCams(cams);
+    renderAlerts(alerts);
+  }catch(e){ /* server briefly busy — keep last view */ }
+}
+
+function renderCams(cams){
+  const names = new Set(cams.map(c=>c.name));
+  // remove gone
+  for(const el of [...document.querySelectorAll('.cam')])
+    if(!names.has(el.dataset.name)) el.remove();
+  for(const c of cams){
+    let el = document.querySelector(`.cam[data-name="${c.name}"]`);
+    if(!el){
+      el = document.createElement('div');
+      el.className='cam'; el.dataset.name=c.name;
+      el.innerHTML = `<img src="/stream/${encodeURIComponent(c.name)}">
+        <div class="bar"><span class="dot"></span><span class="nm"></span>
+        <span class="ct" style="color:var(--dim)"></span>
+        <button class="del" title="Remove">✕</button></div>`;
+      el.querySelector('.del').onclick = async ()=>{
+        if(!confirm('Remove camera "'+c.name+'"?')) return;
+        await fetch('/api/cameras/'+encodeURIComponent(c.name), {method:'DELETE'});
+        refresh();
+      };
+      $('cams').appendChild(el);
+    }
+    el.querySelector('.dot').className = 'dot' + (c.status==='online' ? ' online':'');
+    el.querySelector('.nm').textContent = c.name;
+    el.querySelector('.ct').textContent =
+      `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
+  }
+}
+
+function renderAlerts(alerts){
+  const box = $('alerts');
+  if(!alerts.length){ box.innerHTML='<div class="empty">No alerts yet</div>'; return; }
+  box.innerHTML = alerts.map(a=>`
+    <div class="alert">
+      ${a.snapshot?`<img src="/snapshots/${a.snapshot}">`:''}
+      <div class="t"><div class="ty ${a.type}">${a.type}</div>
+      <div>${a.message}</div><div class="tm">${a.camera} · ${fmtTime(a.ts)}</div></div>
+    </div>`).join('');
+}
+
+$('btnAdd').onclick = async ()=>{
+  const body = { name:$('fName').value, source:$('fSource').value,
+                 max_workers:parseInt($('fMax').value||'3') };
+  if(!body.name || !body.source){ toast('Name aur source dono chahiye'); return; }
+  const r = await fetch('/api/cameras', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(r.ok){ toast('Camera connected: '+body.name); $('fName').value=''; $('fSource').value=''; refresh(); }
+  else{ const e = await r.json(); toast(e.detail||'Failed'); }
+};
+
+$('btnReport').onclick = async ()=>{
+  $('btnReport').disabled = true; $('btnReport').textContent = 'Generating...';
+  try{
+    const r = await fetch('/api/report', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({hours:12})});
+    const d = await r.json();
+    $('mBody').textContent = d.report;
+    $('mTitle').textContent = 'Shift Report' + (d.source==='gemini' ? ' — written by AI' : '');
+    $('mFoot').textContent = d.email_status + '  ·  saved: reports/' + d.file;
+    modal.style.display = 'flex';
+  }catch(e){ toast('Report failed: '+e); }
+  $('btnReport').disabled = false; $('btnReport').textContent = 'Generate Report';
+};
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

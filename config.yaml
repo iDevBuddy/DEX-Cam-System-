@@ -1,0 +1,30 @@
+# DEX AI Monitoring Demo — configuration
+# Cameras can also be added live from the dashboard (they get saved back here).
+
+inference:
+  model: models/yolov8n.pt
+  confidence: 0.35
+  infer_fps: 5          # frames analyzed per second per camera
+  imgsz: 640
+
+activity:
+  # Demo values (short so results are visible quickly in a meeting).
+  # Production would use idle_after_seconds: 30
+  idle_after_seconds: 10      # static this long => IDLE
+  movement_window: 3.0        # seconds of position history to look at
+  movement_threshold: 0.015   # fraction of frame width that counts as movement
+
+alerts:
+  cooldown_seconds: 60          # min gap between same alert type per camera
+  phone_cooldown_seconds: 30
+  unmanned_after_seconds: 120   # zone empty this long => unmanned alert
+
+cameras:
+- name: demo-video
+  source: sample.mp4            # RTSP URL | video file path | 0 for webcam
+  max_workers: 3                # overcrowding alert above this count
+  zone:                         # work zone polygon, normalized 0..1 coords
+  - [0.03, 0.1]
+  - [0.97, 0.1]
+  - [0.97, 0.97]
+  - [0.03, 0.97]
