@@ -3,87 +3,226 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DEX AI — Monitoring</title>
+<title>DEX AI — Monitoring System</title>
 <style>
   :root{
-    --bg:#0b0e13; --panel:#141a23; --panel2:#1b2330; --line:#242e3d;
-    --text:#e8edf4; --dim:#8b98a9; --green:#3ecf7a; --orange:#f5a623;
-    --red:#f05a5a; --cyan:#39c3d4; --accent:#4f8cff;
+    /* surfaces */
+    --bg:#0c1016; --surface:#131923; --surface-2:#1a2230; --inset:#0f141d;
+    --line:#222c3c; --line-strong:#2e3a4e;
+    /* ink */
+    --ink:#e9eef6; --ink-2:#b9c3d2; --dim:#8e9bae;
+    /* semantic */
+    --accent:#4f8cff; --accent-press:#3d76e8;
+    --green:#3fd68c; --orange:#f0a83c; --red:#f26d6d; --cyan:#3cc5d8;
+    /* type + rhythm */
+    --fs-0:12px; --fs-1:13px; --fs-2:14px; --fs-3:16px; --fs-4:20px;
+    --r-s:6px; --r-m:10px; --r-l:14px;
+    /* z scale */
+    --z-sticky:10; --z-modal:50; --z-toast:60;
+    --ease:cubic-bezier(.22,1,.36,1); --t:160ms;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
-  .logo{font-size:17px;font-weight:700;letter-spacing:.4px}
-  .logo span{color:var(--accent)}
-  .tag{color:var(--dim);font-size:12px;border:1px solid var(--line);padding:2px 8px;border-radius:20px}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:var(--fs-2)/1.5 "Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+    font-variant-numeric:tabular-nums;
+  }
+  button,input{font:inherit;color:inherit}
+  ::selection{background:rgba(79,140,255,.28)}
+
+  /* ---------- header ---------- */
+  header{
+    position:sticky; top:0; z-index:var(--z-sticky);
+    display:flex; align-items:center; gap:14px;
+    padding:0 24px; height:56px;
+    background:rgba(19,25,35,.92);
+    backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:0}
+  .brand .mark{font-size:var(--fs-3); font-weight:750; letter-spacing:.2px}
+  .brand .mark b{color:var(--accent); font-weight:750}
+  .brand .divider{width:1px; height:18px; background:var(--line-strong)}
+  .brand .product{font-size:var(--fs-1); color:var(--ink-2); white-space:nowrap}
   .spacer{flex:1}
-  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer;font-size:13px}
-  button:hover{filter:brightness(1.12)}
-  button.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
-  .stats{display:flex;gap:12px;padding:16px 22px;flex-wrap:wrap}
-  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 18px;min-width:130px}
-  .stat .v{font-size:24px;font-weight:700}
-  .stat .l{color:var(--dim);font-size:12px}
-  .v.green{color:var(--green)} .v.orange{color:var(--orange)} .v.red{color:var(--red)} .v.cyan{color:var(--cyan)}
-  .main{display:grid;grid-template-columns:1fr 330px;gap:16px;padding:0 22px 22px}
-  @media(max-width:1000px){.main{grid-template-columns:1fr}}
-  .cams{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-content:start}
-  .cam{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .cam img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000}
-  .cam .bar{display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:13px}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--red)}
-  .dot.online{background:var(--green)}
-  .cam .nm{font-weight:600}
-  .cam .del{margin-left:auto;color:var(--dim);cursor:pointer;background:none;border:0;font-size:15px;padding:0 4px}
+  .chip{
+    font-size:var(--fs-0); color:var(--dim);
+    border:1px solid var(--line); border-radius:999px;
+    padding:3px 10px; white-space:nowrap;
+  }
+  .btn{
+    background:var(--accent); color:#fff; border:0; border-radius:var(--r-s);
+    padding:8px 14px; font-weight:600; font-size:var(--fs-1); cursor:pointer;
+    transition:background var(--t) var(--ease), transform var(--t) var(--ease);
+  }
+  .btn:hover{background:var(--accent-press)}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.55; cursor:default; transform:none}
+  .btn.ghost{background:transparent; border:1px solid var(--line-strong); color:var(--ink-2)}
+  .btn.ghost:hover{background:var(--surface-2); color:var(--ink)}
+  :is(button,input):focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+  /* ---------- status strip ---------- */
+  .strip{
+    display:flex; align-items:center; flex-wrap:wrap;
+    margin:16px 24px 0;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-m);
+    padding:10px 4px;
+  }
+  .seg{
+    display:flex; align-items:baseline; gap:8px;
+    padding:2px 18px; border-right:1px solid var(--line);
+  }
+  .seg:last-child{border-right:0}
+  .seg .k{font-size:var(--fs-0); color:var(--dim); white-space:nowrap}
+  .seg .v{font-size:var(--fs-4); font-weight:700; line-height:1}
+  .v.green{color:var(--green)} .v.orange{color:var(--orange)}
+  .v.red{color:var(--red)} .v.cyan{color:var(--cyan)}
+
+  /* ---------- main grid ---------- */
+  .main{
+    display:grid; grid-template-columns:minmax(0,1fr) 340px;
+    gap:16px; padding:16px 24px 28px; align-items:start;
+  }
+  @media(max-width:1020px){.main{grid-template-columns:1fr}}
+
+  /* ---------- camera cards ---------- */
+  .cams{display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px}
+  .cam{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-l);
+    overflow:hidden;
+    transition:border-color var(--t) var(--ease);
+  }
+  .cam:hover{border-color:var(--line-strong)}
+  .cam img{width:100%; display:block; aspect-ratio:16/9; object-fit:cover; background:#000}
+  .cam .bar{display:flex; align-items:center; gap:9px; padding:10px 14px; font-size:var(--fs-1)}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--red); flex:none}
+  .dot.online{background:var(--green); animation:pulse 2.4s var(--ease) infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(63,214,140,.35)} 50%{box-shadow:0 0 0 5px rgba(63,214,140,0)}}
+  .cam .nm{font-weight:650}
+  .cam .ct{color:var(--dim); font-size:var(--fs-0); margin-left:auto}
+  .cam .del{
+    background:none; border:0; color:var(--dim); cursor:pointer;
+    font-size:var(--fs-2); line-height:1; padding:2px 4px; border-radius:var(--r-s);
+    transition:color var(--t) var(--ease);
+  }
   .cam .del:hover{color:var(--red)}
-  .side{display:flex;flex-direction:column;gap:14px}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
-  .panel h3{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);margin-bottom:12px}
+  .cams .empty{grid-column:1/-1}
+
+  /* ---------- side column ---------- */
+  .side{display:flex; flex-direction:column; gap:14px; min-width:0}
+  .panel{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-l);
+    padding:16px;
+  }
+  .panel h3{
+    font-size:var(--fs-0); font-weight:650; color:var(--dim);
+    text-transform:uppercase; letter-spacing:.5px; margin-bottom:12px;
+  }
+  .row{display:flex; gap:8px}
   .field{margin-bottom:10px}
-  .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
-  input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;font-size:13px}
-  input:focus{outline:1px solid var(--accent)}
-  .hint{font-size:11px;color:var(--dim);margin-top:6px}
-  #alerts{max-height:420px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
-  .alert{display:flex;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px}
-  .alert img{width:74px;height:46px;object-fit:cover;border-radius:6px;background:#000}
-  .alert .t{font-size:12px}
-  .alert .ty{font-weight:700;font-size:11px;text-transform:uppercase}
-  .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)} .ty.unmanned{color:var(--cyan)} .ty.idle_worker{color:var(--orange)}
-  .alert .tm{color:var(--dim);font-size:11px}
-  .empty{color:var(--dim);font-size:13px;text-align:center;padding:14px 0}
-  #sessions{max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
-  .sess{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px}
-  .sess .wid{font-weight:700;color:var(--cyan);min-width:34px}
-  .sess .meta{color:var(--dim)}
-  .sess .apc{margin-left:auto;font-weight:700}
+  .field label{display:block; font-size:var(--fs-0); color:var(--dim); margin-bottom:5px}
+  input{
+    width:100%; background:var(--inset); border:1px solid var(--line);
+    border-radius:var(--r-s); padding:8px 11px; font-size:var(--fs-1);
+    transition:border-color var(--t) var(--ease);
+  }
+  input::placeholder{color:#6d7a8e}
+  input:hover{border-color:var(--line-strong)}
+  input:focus{outline:none; border-color:var(--accent)}
+  .hint{font-size:var(--fs-0); color:var(--dim); margin-top:8px; line-height:1.55}
+  .hint b{color:var(--ink-2); font-weight:600}
+
+  /* lists */
+  #sessions,#alerts{display:flex; flex-direction:column; gap:6px; overflow-y:auto}
+  #sessions{max-height:230px} #alerts{max-height:430px}
+  .empty{
+    color:var(--dim); font-size:var(--fs-1); line-height:1.55;
+    padding:14px 12px;
+    border:1px dashed var(--line); border-radius:var(--r-s);
+  }
+  .sess{
+    display:flex; align-items:center; gap:9px;
+    padding:8px 10px; border-radius:var(--r-s);
+    background:var(--inset);
+    font-size:var(--fs-0);
+  }
+  .sess .wid{font-weight:700; color:var(--cyan); flex:none}
+  .sess .meta{color:var(--dim); min-width:0}
+  .sess .apc{margin-left:auto; font-weight:700; flex:none}
   .apc.hi{color:var(--green)} .apc.lo{color:var(--orange)}
-  /* modal */
-  #modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:50}
-  #modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:640px;width:92%;max-height:82vh;display:flex;flex-direction:column}
-  #modal .head{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);font-weight:700}
+  .alert{
+    display:flex; gap:10px; align-items:center;
+    padding:8px 10px; border-radius:var(--r-s); background:var(--inset);
+    animation:enter 220ms var(--ease);
+  }
+  @keyframes enter{from{opacity:0; transform:translateY(3px)} to{opacity:1; transform:none}}
+  .alert img{width:76px; height:46px; object-fit:cover; border-radius:4px; background:#000; flex:none}
+  .alert .t{font-size:var(--fs-0); line-height:1.45; min-width:0}
+  .alert .ty{font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.4px}
+  .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)}
+  .ty.unmanned{color:var(--cyan)} .ty.idle_worker{color:var(--orange)}
+  .alert .tm{color:var(--dim)}
+
+  canvas{display:block; width:100%}
+
+  /* ---------- modal ---------- */
+  #modal{
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:rgba(5,8,12,.66); z-index:var(--z-modal);
+    animation:fade 180ms var(--ease);
+  }
+  @keyframes fade{from{opacity:0}}
+  #modal .box{
+    background:var(--surface); border:1px solid var(--line-strong); border-radius:var(--r-l);
+    width:min(660px,92vw); max-height:82vh; display:flex; flex-direction:column;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);
+    animation:rise 200ms var(--ease);
+  }
+  @keyframes rise{from{opacity:0; transform:translateY(8px)}}
+  #modal .head{
+    display:flex; align-items:center; gap:12px;
+    padding:14px 18px; border-bottom:1px solid var(--line); font-weight:650;
+  }
   #modal .head button{margin-left:auto}
-  #modal pre{padding:18px;overflow:auto;white-space:pre-wrap;font:12.5px/1.6 Consolas,monospace;color:var(--text)}
-  #modal .foot{padding:10px 18px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
-  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:10px 18px;border-radius:10px;display:none;z-index:60}
+  #modal pre{
+    padding:18px; overflow:auto; white-space:pre-wrap;
+    font:12.5px/1.65 Consolas,"Cascadia Mono",monospace; color:var(--ink-2);
+  }
+  #modal .foot{padding:10px 18px; border-top:1px solid var(--line); color:var(--dim); font-size:var(--fs-0)}
+
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--surface-2); border:1px solid var(--line-strong);
+    padding:10px 18px; border-radius:var(--r-m); font-size:var(--fs-1);
+    display:none; z-index:var(--z-toast); box-shadow:0 8px 28px rgba(0,0,0,.4);
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation:none!important; transition:none!important}
+  }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">DEX <span>AI</span></div>
-  <div class="tag">Monitoring System</div>
+  <div class="brand">
+    <span class="mark">DEX <b>AI</b></span>
+    <span class="divider"></span>
+    <span class="product">Monitoring System</span>
+  </div>
   <div class="spacer"></div>
-  <span id="device" class="tag"></span>
-  <button id="btnReport">Generate Report</button>
+  <span id="device" class="chip"></span>
+  <button id="btnReport" class="btn">Generate Report</button>
 </header>
 
-<div class="stats">
-  <div class="stat"><div class="v" id="sCams">0</div><div class="l">Cameras online</div></div>
-  <div class="stat"><div class="v cyan" id="sWorkers">0</div><div class="l">Workers in zones</div></div>
-  <div class="stat"><div class="v green" id="sActive">0</div><div class="l">Active</div></div>
-  <div class="stat"><div class="v orange" id="sIdle">0</div><div class="l">Idle</div></div>
-  <div class="stat"><div class="v red" id="sAlerts">0</div><div class="l">Alerts (24h)</div></div>
+<div class="strip" role="status">
+  <div class="seg"><span class="v" id="sCams">0</span><span class="k">cameras online</span></div>
+  <div class="seg"><span class="v cyan" id="sWorkers">0</span><span class="k">workers in zones</span></div>
+  <div class="seg"><span class="v green" id="sActive">0</span><span class="k">active</span></div>
+  <div class="seg"><span class="v orange" id="sIdle">0</span><span class="k">idle</span></div>
+  <div class="seg"><span class="v red" id="sAlerts">0</span><span class="k">alerts · 24h</span></div>
 </div>
 
 <div class="main">
@@ -91,38 +230,42 @@
 
   <div class="side">
     <div class="panel">
-      <h3>Add camera</h3>
-      <div class="field"><label>Name</label><input id="fName" placeholder="cutting-01"></div>
-      <div class="field"><label>Source</label><input id="fSource" placeholder="rtsp://user:pass@192.168.1.100:554/Streaming/Channels/102"></div>
-      <div class="field"><label>Max workers (overcrowding limit)</label><input id="fMax" type="number" value="3" min="1"></div>
-      <button id="btnAdd" style="width:100%">Connect camera</button>
-      <div class="hint">Source = Hikvision RTSP URL, video file path, or <b>0</b> for webcam.</div>
-    </div>
-    <div class="panel">
       <h3>Worker report</h3>
-      <div style="display:flex;gap:8px">
-        <input id="fWorker" placeholder="W3" style="flex:1">
-        <button id="btnWorker">Report</button>
+      <div class="row">
+        <input id="fWorker" placeholder="W3" style="flex:1" aria-label="Worker ID">
+        <button id="btnWorker" class="btn ghost">Report</button>
       </div>
-      <div class="hint">Worker ka number likho (video pe box ke upar dikhta hai)</div>
+      <div class="hint">Video pe worker ke box ka number likho — poori history milegi.</div>
     </div>
+
     <div class="panel">
       <h3>Workers — last 60 min</h3>
-      <canvas id="chart" width="300" height="90" style="width:100%"></canvas>
+      <canvas id="chart" width="300" height="90"></canvas>
     </div>
+
     <div class="panel">
       <h3>Worker visits</h3>
-      <div id="sessions"><div class="empty">No visits recorded yet</div></div>
+      <div id="sessions"><div class="empty">Jab koi worker 15 sec se zyada nazar aayega, uski entry–exit yahan record hogi.</div></div>
     </div>
+
     <div class="panel">
       <h3>Live alerts</h3>
-      <div id="alerts"><div class="empty">No alerts yet</div></div>
+      <div id="alerts"><div class="empty">Idle workers, overcrowding aur phone alerts yahan snapshot ke saath aayenge.</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>Add camera</h3>
+      <div class="field"><label for="fName">Name</label><input id="fName" placeholder="cutting-01"></div>
+      <div class="field"><label for="fSource">Source</label><input id="fSource" placeholder="rtsp://user:pass@192.168.1.100:554/Streaming/Channels/102"></div>
+      <div class="field"><label for="fMax">Max workers (overcrowding limit)</label><input id="fMax" type="number" value="3" min="1"></div>
+      <button id="btnAdd" class="btn" style="width:100%">Connect camera</button>
+      <div class="hint">Source = Hikvision RTSP URL, video file path, ya <b>0</b> webcam ke liye.</div>
     </div>
   </div>
 </div>
 
 <div id="modal"><div class="box">
-  <div class="head"><span id="mTitle">Shift Report</span><button class="ghost" onclick="modal.style.display='none'">Close</button></div>
+  <div class="head"><span id="mTitle">Shift Report</span><button class="btn ghost" onclick="modal.style.display='none'">Close</button></div>
   <pre id="mBody"></pre>
   <div class="foot" id="mFoot"></div>
 </div></div>
@@ -131,12 +274,11 @@
 <script>
 const $ = id => document.getElementById(id);
 const modal = $('modal');
-let knownCams = new Set();
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block';
   clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 3500); }
 
-function fmtTime(ts){ return new Date(ts*1000).toLocaleTimeString(); }
+function fmtTime(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}); }
 
 async function refresh(){
   try{
@@ -158,18 +300,24 @@ async function refresh(){
 
 function renderCams(cams){
   const names = new Set(cams.map(c=>c.name));
-  // remove gone
   for(const el of [...document.querySelectorAll('.cam')])
     if(!names.has(el.dataset.name)) el.remove();
+  const emptyEl = document.querySelector('.cams .empty');
+  if(!cams.length){
+    if(!emptyEl) $('cams').innerHTML =
+      '<div class="empty">Koi camera connected nahi — "Add camera" se RTSP URL, video file ya webcam (0) lagao.</div>';
+    return;
+  }
+  if(emptyEl) emptyEl.remove();
   for(const c of cams){
     let el = document.querySelector(`.cam[data-name="${c.name}"]`);
     if(!el){
       el = document.createElement('div');
       el.className='cam'; el.dataset.name=c.name;
-      el.innerHTML = `<img src="/stream/${encodeURIComponent(c.name)}">
+      el.innerHTML = `<img src="/stream/${encodeURIComponent(c.name)}" alt="">
         <div class="bar"><span class="dot"></span><span class="nm"></span>
-        <span class="ct" style="color:var(--dim)"></span>
-        <button class="del" title="Remove">✕</button></div>`;
+        <span class="ct"></span>
+        <button class="del" title="Remove camera">✕</button></div>`;
       el.querySelector('.del').onclick = async ()=>{
         if(!confirm('Remove camera "'+c.name+'"?')) return;
         await fetch('/api/cameras/'+encodeURIComponent(c.name), {method:'DELETE'});
@@ -186,42 +334,18 @@ function renderCams(cams){
 
 function renderAlerts(alerts){
   const box = $('alerts');
-  if(!alerts.length){ box.innerHTML='<div class="empty">No alerts yet</div>'; return; }
+  if(!alerts.length){ return; }
   box.innerHTML = alerts.map(a=>`
     <div class="alert">
-      ${a.snapshot?`<img src="/snapshots/${a.snapshot}">`:''}
-      <div class="t"><div class="ty ${a.type}">${a.type}</div>
+      ${a.snapshot?`<img src="/snapshots/${a.snapshot}" alt="">`:''}
+      <div class="t"><div class="ty ${a.type}">${a.type.replace('_',' ')}</div>
       <div>${a.message}</div><div class="tm">${a.camera} · ${fmtTime(a.ts)}</div></div>
     </div>`).join('');
 }
 
-$('btnAdd').onclick = async ()=>{
-  const body = { name:$('fName').value, source:$('fSource').value,
-                 max_workers:parseInt($('fMax').value||'3') };
-  if(!body.name || !body.source){ toast('Name aur source dono chahiye'); return; }
-  const r = await fetch('/api/cameras', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if(r.ok){ toast('Camera connected: '+body.name); $('fName').value=''; $('fSource').value=''; refresh(); }
-  else{ const e = await r.json(); toast(e.detail||'Failed'); }
-};
-
-$('btnReport').onclick = async ()=>{
-  $('btnReport').disabled = true; $('btnReport').textContent = 'Generating...';
-  try{
-    const r = await fetch('/api/report', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({hours:12})});
-    const d = await r.json();
-    $('mBody').textContent = d.report;
-    $('mTitle').textContent = 'Shift Report' + (d.source==='ai' ? ' — written by AI' : '');
-    $('mFoot').textContent = d.email_status + '  ·  saved: reports/' + d.file;
-    modal.style.display = 'flex';
-  }catch(e){ toast('Report failed: '+e); }
-  $('btnReport').disabled = false; $('btnReport').textContent = 'Generate Report';
-};
-
 function renderSessions(sessions){
   const box = $('sessions');
-  if(!sessions.length){ box.innerHTML='<div class="empty">No visits recorded yet</div>'; return; }
+  if(!sessions.length){ return; }
   box.innerHTML = sessions.map(s=>`
     <div class="sess">
       <span class="wid">${s.worker}</span>
@@ -237,25 +361,22 @@ function drawChart(points){
   const cyan = css.getPropertyValue('--cyan').trim();
   const dim  = css.getPropertyValue('--dim').trim();
   if(points.length < 2){
-    ctx.fillStyle = dim; ctx.font = '11px sans-serif';
-    ctx.fillText('Collecting data...', 100, 50);
+    ctx.fillStyle = dim; ctx.font = '11px system-ui';
+    ctx.fillText('Data jama ho raha hai…', 96, 50);
     return;
   }
   const W=cv.width, H=cv.height, pad=14;
   const maxY = Math.max(2, ...points.map(p=>p.workers));
   const x = i => pad + (W-2*pad) * i/(points.length-1);
   const y = v => H-pad - (H-2*pad) * v/maxY;
-  // grid line + max label
-  ctx.strokeStyle = 'rgba(139,152,169,.25)'; ctx.lineWidth=1;
+  ctx.strokeStyle = 'rgba(142,155,174,.22)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(pad, y(maxY)); ctx.lineTo(W-pad, y(maxY)); ctx.stroke();
-  ctx.fillStyle = dim; ctx.font='10px sans-serif';
+  ctx.fillStyle = dim; ctx.font='10px system-ui';
   ctx.fillText(maxY, 2, y(maxY)+3); ctx.fillText('0', 2, y(0)+3);
-  // area fill
   ctx.beginPath(); ctx.moveTo(x(0), y(0));
   points.forEach((p,i)=>ctx.lineTo(x(i), y(p.workers)));
   ctx.lineTo(x(points.length-1), y(0)); ctx.closePath();
-  ctx.fillStyle = 'rgba(57,195,212,.15)'; ctx.fill();
-  // line
+  ctx.fillStyle = 'rgba(60,197,216,.14)'; ctx.fill();
   ctx.beginPath();
   points.forEach((p,i)=> i? ctx.lineTo(x(i), y(p.workers)) : ctx.moveTo(x(i), y(p.workers)));
   ctx.strokeStyle = cyan; ctx.lineWidth = 1.6; ctx.stroke();
@@ -271,6 +392,30 @@ async function refreshSlow(){
     drawChart(hist);
   }catch(e){}
 }
+
+$('btnAdd').onclick = async ()=>{
+  const body = { name:$('fName').value, source:$('fSource').value,
+                 max_workers:parseInt($('fMax').value||'3') };
+  if(!body.name || !body.source){ toast('Name aur source dono chahiye'); return; }
+  const r = await fetch('/api/cameras', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(r.ok){ toast('Camera connected: '+body.name); $('fName').value=''; $('fSource').value=''; refresh(); }
+  else{ const e = await r.json(); toast(e.detail||'Failed'); }
+};
+
+$('btnReport').onclick = async ()=>{
+  $('btnReport').disabled = true; $('btnReport').textContent = 'Generating…';
+  try{
+    const r = await fetch('/api/report', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({hours:12})});
+    const d = await r.json();
+    $('mBody').textContent = d.report;
+    $('mTitle').textContent = 'Shift Report' + (d.source==='ai' ? ' — written by AI' : '');
+    $('mFoot').textContent = d.email_status + '  ·  saved: reports/' + d.file;
+    modal.style.display = 'flex';
+  }catch(e){ toast('Report failed: '+e); }
+  $('btnReport').disabled = false; $('btnReport').textContent = 'Generate Report';
+};
 
 $('btnWorker').onclick = async ()=>{
   const wid = $('fWorker').value.trim();
