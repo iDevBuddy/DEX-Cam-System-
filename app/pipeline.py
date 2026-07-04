@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import supervision as sv
 
-from . import db, detector
+from . import db, detector, ids
 from .activity import ActivityTracker
 from .alerts import AlertManager
 from .camera import LatestFrameReader
@@ -22,11 +22,17 @@ CYAN = (200, 200, 40)     # zone
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, name: str, source, zone: Zone, cfg: dict, process: bool = True):
+    def __init__(self, name: str, source, zone: Zone, cfg: dict,
+                 process: bool = True, confidence: float | None = None):
         super().__init__(daemon=True, name=f"cam-{name}")
         self.cam_name = name
         self.source_str = str(source)
         self.process_enabled = process  # False => live view only, no AI
+        self.conf = float(confidence) if confidence else float(
+            cfg["inference"].get("confidence", 0.35))
+        # raw ByteTrack id -> small stable display id (W1, W2...)
+        self._display: dict[int, int] = {}
+        self._raw_seen: dict[int, float] = {}
         self.zone = zone
         self.inf_cfg = cfg["inference"]
         self.tracker = sv.ByteTrack()
@@ -95,7 +101,7 @@ class CameraWorker(threading.Thread):
         h, w = frame.shape[:2]
         result = detector.predict(
             frame,
-            conf=float(self.inf_cfg.get("confidence", 0.35)),
+            conf=self.conf,
             imgsz=int(self.inf_cfg.get("imgsz", 640)),
         )
         det = sv.Detections.from_ultralytics(result)
@@ -116,9 +122,10 @@ class CameraWorker(threading.Thread):
             anchors.append(((x1 + x2) / 2, y2))
             centroids.append(((x1 + x2) / 2, (y1 + y2) / 2))
 
-        track_ids = tracked.tracker_id if tracked.tracker_id is not None else []
+        raw_ids = tracked.tracker_id if tracked.tracker_id is not None else []
+        track_ids = self._map_ids(raw_ids)
         states = self.activity.update(track_ids, centroids, w)
-        postures = self._update_postures(frame, tracked, w, h)
+        postures = self._update_postures(frame, tracked, track_ids, w, h)
         # Posture overrides movement: seated => idle; standing at the machine
         # => active even when motionless (operating a machine barely moves the
         # body — that is work, not idleness).
@@ -147,7 +154,7 @@ class CameraWorker(threading.Thread):
             for tid, st in states.items()
         }
 
-        annotated = self._annotate(frame, tracked, states, phones, w, h, postures)
+        annotated = self._annotate(frame, tracked, track_ids, states, phones, w, h, postures)
         self.alerts.check(in_zone, self.zone.max_workers, len(phones), annotated)
         self._check_idle_workers(states, annotated)
         self._encode(annotated)
@@ -156,6 +163,23 @@ class CameraWorker(threading.Thread):
         if now - self._last_db_log >= 1.0:
             self._last_db_log = now
             db.log_observation(self.cam_name, in_zone, active, idle)
+
+    def _map_ids(self, raw_ids) -> list[int]:
+        """Raw tracker ids (grow forever) -> smallest free display numbers."""
+        now = time.monotonic()
+        out = []
+        for rid in raw_ids:
+            rid = int(rid)
+            self._raw_seen[rid] = now
+            if rid not in self._display:
+                self._display[rid] = ids.acquire()
+            out.append(self._display[rid])
+        for rid in [r for r, t in self._raw_seen.items() if now - t > 6.0]:
+            self._raw_seen.pop(rid, None)
+            disp = self._display.pop(rid, None)
+            if disp is not None:
+                ids.release(disp)
+        return out
 
     def _update_sessions(self, states: dict, postures: dict | None = None):
         """Track each worker's visit: first seen → last seen, with active ratio
@@ -205,14 +229,13 @@ class CameraWorker(threading.Thread):
         for tid in [t for t in self._idle_since if t not in states]:
             self._idle_since.pop(tid, None)
 
-    def _update_postures(self, frame, tracked, w, h) -> dict:
+    def _update_postures(self, frame, tracked, track_ids, w, h) -> dict:
         """Posture per visible worker, refreshed at most 1x/sec per track."""
         if not self._posture or not self._posture.ok:
             return {}
         now = time.monotonic()
         postures = {}
-        ids = tracked.tracker_id if tracked.tracker_id is not None else []
-        for (x1, y1, x2, y2), tid in zip(tracked.xyxy, ids):
+        for (x1, y1, x2, y2), tid in zip(tracked.xyxy, track_ids):
             tid = int(tid)
             cached = self._posture_cache.get(tid)
             if cached and now - cached["t"] < 1.0:
@@ -228,7 +251,7 @@ class CameraWorker(threading.Thread):
             self._posture_cache.pop(tid, None)
         return postures
 
-    def _annotate(self, frame, tracked, states, phones, w, h, postures=None):
+    def _annotate(self, frame, tracked, track_ids, states, phones, w, h, postures=None):
         out = frame.copy()
 
         # Zone overlay (translucent fill + outline)
@@ -239,8 +262,7 @@ class CameraWorker(threading.Thread):
         cv2.polylines(out, [poly], True, CYAN, 2)
 
         # Workers
-        ids = tracked.tracker_id if tracked.tracker_id is not None else []
-        for (x1, y1, x2, y2), tid in zip(tracked.xyxy, ids):
+        for (x1, y1, x2, y2), tid in zip(tracked.xyxy, track_ids):
             state = states.get(int(tid), "active")
             color = GREEN if state == "active" else ORANGE
             p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))

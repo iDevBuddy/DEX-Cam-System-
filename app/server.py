@@ -22,7 +22,8 @@ cfg: dict = {}
 def start_camera(cam: dict):
     zone = Zone(cam.get("zone") or DEFAULT_ZONE, cam.get("max_workers", 3))
     w = CameraWorker(cam["name"], cam["source"], zone, cfg,
-                     process=cam.get("process", True))
+                     process=cam.get("process", True),
+                     confidence=cam.get("confidence"))
     workers[cam["name"]] = w
     w.start()
 
