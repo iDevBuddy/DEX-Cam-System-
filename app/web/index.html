@@ -327,8 +327,9 @@ function renderCams(cams){
     }
     el.querySelector('.dot').className = 'dot' + (c.status==='online' ? ' online':'');
     el.querySelector('.nm').textContent = c.name;
-    el.querySelector('.ct').textContent =
-      `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
+    el.querySelector('.ct').textContent = c.processing === false
+      ? 'live view only'
+      : `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
   }
 }
 

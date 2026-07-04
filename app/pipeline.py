@@ -22,10 +22,11 @@ CYAN = (200, 200, 40)     # zone
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, name: str, source, zone: Zone, cfg: dict):
+    def __init__(self, name: str, source, zone: Zone, cfg: dict, process: bool = True):
         super().__init__(daemon=True, name=f"cam-{name}")
         self.cam_name = name
         self.source_str = str(source)
+        self.process_enabled = process  # False => live view only, no AI
         self.zone = zone
         self.inf_cfg = cfg["inference"]
         self.tracker = sv.ByteTrack()
@@ -71,12 +72,16 @@ class CameraWorker(threading.Thread):
 
             t0 = time.monotonic()
             try:
-                self._process(frame)
+                if self.process_enabled:
+                    self._process(frame)
+                else:
+                    self._encode_view_only(frame)
             except Exception:
                 # Never let one bad frame kill the camera thread.
                 time.sleep(0.2)
             # Keep our own pace; the reader keeps the frame fresh meanwhile.
-            time.sleep(max(0.0, interval - (time.monotonic() - t0)))
+            pace = interval if self.process_enabled else 0.12
+            time.sleep(max(0.0, pace - (time.monotonic() - t0)))
 
         reader.stop()
         self.status = "stopped"
@@ -114,10 +119,14 @@ class CameraWorker(threading.Thread):
         track_ids = tracked.tracker_id if tracked.tracker_id is not None else []
         states = self.activity.update(track_ids, centroids, w)
         postures = self._update_postures(frame, tracked, w, h)
-        # Posture overrides movement: a seated worker is idle even if fidgeting.
+        # Posture overrides movement: seated => idle; standing at the machine
+        # => active even when motionless (operating a machine barely moves the
+        # body — that is work, not idleness).
         for tid, p in postures.items():
             if p == "sitting":
                 states[tid] = "idle"
+            elif p == "standing":
+                states[tid] = "active"
 
         raw_in_zone = sum(1 for a in anchors if self.zone.contains(a, w, h))
         raw_active = sum(1 for s in states.values() if s == "active")
@@ -268,6 +277,15 @@ class CameraWorker(threading.Thread):
         if ok:
             with self._jpeg_lock:
                 self._latest_jpeg = buf.tobytes()
+
+    def _encode_view_only(self, frame):
+        """No AI — just the live picture with a small header."""
+        out = frame.copy()
+        h, w = out.shape[:2]
+        cv2.rectangle(out, (0, 0), (w, 30), (25, 25, 25), -1)
+        cv2.putText(out, f"{self.cam_name}  |  LIVE VIEW", (10, 21),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
+        self._encode(out)
 
     def _set_offline_frame(self):
         img = np.zeros((360, 640, 3), dtype=np.uint8)

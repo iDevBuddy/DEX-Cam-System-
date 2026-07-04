@@ -21,7 +21,8 @@ cfg: dict = {}
 
 def start_camera(cam: dict):
     zone = Zone(cam.get("zone") or DEFAULT_ZONE, cam.get("max_workers", 3))
-    w = CameraWorker(cam["name"], cam["source"], zone, cfg)
+    w = CameraWorker(cam["name"], cam["source"], zone, cfg,
+                     process=cam.get("process", True))
     workers[cam["name"]] = w
     w.start()
 
@@ -58,6 +59,7 @@ def list_cameras():
             "name": w.cam_name,
             "source": w.source_str,
             "status": w.status,
+            "processing": w.process_enabled,
             "max_workers": w.zone.max_workers,
             "live_ids": [f"W{t}" for t in sorted(w.live)],
             **w.counts,
