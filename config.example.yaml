@@ -3,10 +3,11 @@
 # Cameras can also be added live from the dashboard (they get saved to config.yaml).
 
 inference:
-  model: models/yolov8n.pt
+  model: models/yolo11n.pt
   confidence: 0.25
   infer_fps: 4          # frames analyzed per second per camera (CPU-friendly)
   imgsz: 416            # 640 on GPU builds
+  use_reid: true        # OSNet person re-identification (persistent worker IDs)
 
 activity:
   idle_after_seconds: 10
@@ -30,3 +31,8 @@ cameras:
   - [0.97, 0.1]
   - [0.97, 0.97]
   - [0.03, 0.97]
+  # Machine areas: a worker standing inside one counts as ACTIVE (working);
+  # away from every machine zone (or sitting) counts as IDLE.
+  machine_zones:
+  - name: machine-1
+    zone: [[0.10, 0.30], [0.45, 0.30], [0.45, 0.95], [0.10, 0.95]]

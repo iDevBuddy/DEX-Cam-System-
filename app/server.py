@@ -23,7 +23,8 @@ def start_camera(cam: dict):
     zone = Zone(cam.get("zone") or DEFAULT_ZONE, cam.get("max_workers", 3))
     w = CameraWorker(cam["name"], cam["source"], zone, cfg,
                      process=cam.get("process", True),
-                     confidence=cam.get("confidence"))
+                     confidence=cam.get("confidence"),
+                     machine_zones=cam.get("machine_zones"))
     workers[cam["name"]] = w
     w.start()
 
@@ -62,7 +63,8 @@ def list_cameras():
             "status": w.status,
             "processing": w.process_enabled,
             "max_workers": w.zone.max_workers,
-            "live_ids": [f"W{t}" for t in sorted(w.live)],
+            "live_ids": sorted({i["display"] for i in w.live.values()
+                                if i["display"] != "..."}),
             **w.counts,
         }
         for w in workers.values()
@@ -139,6 +141,79 @@ def snapshot(fname: str):
     return FileResponse(path)
 
 
+@app.get("/crops/{fname}")
+def person_crop(fname: str):
+    from .reid import CROP_DIR
+    path = (CROP_DIR / fname).resolve()
+    if not path.is_file() or path.parent != CROP_DIR.resolve():
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+# ---------------- people (identity & approval) ----------------
+
+CANDIDATE_MACHINE_MIN = 10.0  # unknown person with this much machine time
+                              # is probably a worker — ask the owner
+
+
+def _reid():
+    from . import reid
+    r = reid.shared()
+    if not r.ok:
+        raise HTTPException(503, "Re-identification is not available")
+    return r
+
+
+@app.get("/api/persons")
+def list_persons():
+    r = _reid()
+    live_now = {}
+    for w in workers.values():
+        for info in w.live.values():
+            if info.get("pid") is not None:
+                live_now[info["pid"]] = {
+                    "camera": w.cam_name, "state": info["state"],
+                    "machine": info.get("machine"),
+                }
+    out = []
+    for p in r.persons_snapshot():
+        p["live"] = live_now.get(p["id"])
+        p["candidate"] = (p["label"] == "unknown"
+                          and p["machine_min"] >= CANDIDATE_MACHINE_MIN)
+        out.append(p)
+    # Workers first (by number), then candidates, then the rest by recency.
+    out.sort(key=lambda p: (
+        0 if p["label"] == "worker" else (1 if p["candidate"] else 2),
+        p.get("worker_no") or 999,
+        -(p.get("last_seen") or 0),
+    ))
+    return out
+
+
+class LabelIn(BaseModel):
+    label: str  # 'worker' | 'visitor' | 'unknown'
+    worker_no: int | None = None
+
+
+@app.post("/api/persons/{pid}/label")
+def label_person(pid: int, body: LabelIn):
+    if body.label not in ("worker", "visitor", "unknown"):
+        raise HTTPException(400, "label must be worker, visitor or unknown")
+    try:
+        return _reid().set_label(pid, body.label, body.worker_no)
+    except KeyError:
+        raise HTTPException(404, "No such person")
+
+
+@app.post("/api/persons/{keep}/merge/{absorb}")
+def merge_persons(keep: int, absorb: int):
+    """Same human got two IDs (clothing change / bad angle) — fold them."""
+    try:
+        return _reid().merge(keep, absorb)
+    except KeyError:
+        raise HTTPException(404, "No such person(s)")
+
+
 @app.get("/api/stats")
 def stats():
     total = {"workers": 0, "active": 0, "idle": 0}
@@ -168,55 +243,99 @@ def make_report(req: ReportIn):
 
 
 @app.get("/api/worker/{wid}")
-def worker_report(wid: str, hours: float = 12.0):
-    """Everything we know about one worker ID: where they are right now,
-    plus their visit history."""
-    try:
-        tid = int(wid.upper().lstrip("W"))
-    except ValueError:
-        raise HTTPException(400, "Worker id looks like: W3 or 3")
-
+def worker_report(wid: str, hours: float = 12.0, email: bool = False):
+    """Everything we know about one person: where they are right now, machine
+    time, visit history — and optionally email it with their photo attached.
+    Accepts W1 (approved worker), P5 / V5 (person id), or a bare number."""
+    import time as _t
     from datetime import datetime
-    lines = [f"WORKER W{tid} — REPORT", ""]
+
+    r = _reid()
+    wid = wid.strip().upper()
+    pid = None
+    if wid.startswith("W"):
+        try:
+            pid = r.person_for_worker_no(int(wid[1:]))
+        except ValueError:
+            raise HTTPException(400, "Worker id looks like: W1, P5 or V5")
+        if pid is None:
+            raise HTTPException(404, f"No approved worker {wid}. "
+                                     "Approve one in the People panel first.")
+    else:
+        try:
+            pid = int(wid.lstrip("PV"))
+        except ValueError:
+            raise HTTPException(400, "Worker id looks like: W1, P5 or V5")
+
+    people = {p["id"]: p for p in r.persons_snapshot()}
+    person = people.get(pid)
+    if not person:
+        raise HTTPException(404, f"No person with id {pid}")
+    disp = person["display"]
+
+    lines = [f"{'WORKER' if person['label'] == 'worker' else 'PERSON'} {disp} — REPORT", ""]
 
     # Live status across all cameras
     now_lines = []
     for w in workers.values():
-        info = w.live.get(tid)
-        if info:
-            posture = f", {info['posture']}" if info["posture"] else ""
-            now_lines.append(
-                f"  RIGHT NOW on '{w.cam_name}': {info['state'].upper()}{posture}"
-            )
+        for info in w.live.values():
+            if info.get("pid") == pid:
+                extra = ""
+                if info.get("machine"):
+                    extra += f" at machine '{info['machine']}'"
+                if info.get("posture"):
+                    extra += f", {info['posture']}"
+                now_lines.append(
+                    f"  RIGHT NOW on '{w.cam_name}': {info['state'].upper()}{extra}"
+                )
     lines += now_lines if now_lines else ["  Not visible on any camera right now."]
 
+    lines += ["", f"ALL-TIME: seen {person['total_min']:g} min total, "
+                  f"{person['machine_min']:g} min at machines."]
+
     # Visit history
-    import time as _t
     rows = db.query(
-        """SELECT camera, start_ts, end_ts, duration, active_pct, posture
-           FROM sessions WHERE track_id = ? AND end_ts >= ?
+        """SELECT camera, start_ts, end_ts, duration, active_pct, posture, machine_pct
+           FROM sessions WHERE person_id = ? AND end_ts >= ?
            ORDER BY end_ts DESC LIMIT 10""",
-        (tid, _t.time() - hours * 3600),
+        (pid, _t.time() - hours * 3600),
     )
     lines.append("")
     if rows:
         lines.append(f"VISIT HISTORY (last {hours:g}h):")
-        total_min = total_act = 0.0
-        for cam, start, end, dur, act, posture in rows:
+        total_min = total_act = total_mach = 0.0
+        for cam, start, end, dur, act, posture, mach in rows:
             mins = dur / 60
             act_min = mins * (act or 0) / 100
+            mach_min = mins * (mach or 0) / 100
             total_min += mins
             total_act += act_min
+            total_mach += mach_min
             lines.append(
                 f"  {cam}: {datetime.fromtimestamp(start).strftime('%H:%M')}-"
                 f"{datetime.fromtimestamp(end).strftime('%H:%M')} "
-                f"({mins:.1f} min: {act_min:.1f} active, {mins - act_min:.1f} idle"
+                f"({mins:.1f} min: {act_min:.1f} active, {mins - act_min:.1f} idle, "
+                f"{mach_min:.1f} at machine"
                 + (f", mostly {posture}" if posture else "") + ")"
             )
-        lines += ["", f"TOTAL: {len(rows)} visit(s), {total_min:.1f} min — "
-                      f"active {total_act:.1f} min, idle {total_min - total_act:.1f} min "
-                      f"({100 * total_act / total_min:.0f}% active)" if total_min else ""]
+        if total_min:
+            lines += ["", f"TOTAL: {len(rows)} visit(s), {total_min:.1f} min — "
+                          f"active {total_act:.1f} min, idle {total_min - total_act:.1f} min, "
+                          f"at machine {total_mach:.1f} min "
+                          f"({100 * total_act / total_min:.0f}% active)"]
     else:
         lines.append(f"No completed visits recorded in the last {hours:g}h.")
 
-    return {"worker": f"W{tid}", "report": "\n".join(lines)}
+    body = "\n".join(lines)
+    result = {"worker": disp, "person_id": pid, "crop": person.get("crop"),
+              "report": body}
+
+    if email:
+        from .reid import CROP_DIR
+        attachments = []
+        if person.get("crop") and (CROP_DIR / person["crop"]).is_file():
+            attachments.append(CROP_DIR / person["crop"])
+        ok, msg = report.send_email(
+            f"DEX AI — Report for {disp}", body, None, attachments)
+        result["emailed"], result["email_status"] = ok, msg
+    return result

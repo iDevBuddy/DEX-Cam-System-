@@ -167,6 +167,45 @@
 
   canvas{display:block; width:100%}
 
+  /* ---------- people (identity & approval) ---------- */
+  #people{display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto}
+  .person{
+    display:flex; gap:10px; align-items:center;
+    padding:8px 10px; border-radius:var(--r-s); background:var(--inset);
+    border:1px solid transparent;
+  }
+  .person.candidate{border-color:rgba(240,168,60,.45)}
+  .person img{
+    width:44px; height:58px; object-fit:cover; border-radius:4px;
+    background:#000; flex:none;
+  }
+  .person .noimg{
+    width:44px; height:58px; border-radius:4px; background:var(--surface-2);
+    display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:16px; flex:none;
+  }
+  .person .info{min-width:0; flex:1}
+  .person .who{font-weight:700; font-size:var(--fs-1)}
+  .who .tag{
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+    border-radius:999px; padding:1px 7px; margin-left:6px; vertical-align:1px;
+  }
+  .tag.worker{background:rgba(63,214,140,.15); color:var(--green)}
+  .tag.visitor{background:rgba(142,155,174,.15); color:var(--dim)}
+  .tag.candidate{background:rgba(240,168,60,.16); color:var(--orange)}
+  .person .st{font-size:var(--fs-0); color:var(--dim); line-height:1.5}
+  .person .st b{color:var(--ink-2); font-weight:600}
+  .person .acts{display:flex; flex-direction:column; gap:5px; flex:none}
+  .mini{
+    background:transparent; border:1px solid var(--line-strong); color:var(--ink-2);
+    border-radius:var(--r-s); padding:3px 9px; font-size:var(--fs-0);
+    font-weight:600; cursor:pointer; white-space:nowrap;
+    transition:background var(--t) var(--ease), color var(--t) var(--ease);
+  }
+  .mini:hover{background:var(--surface-2); color:var(--ink)}
+  .mini.ok{border-color:rgba(63,214,140,.5); color:var(--green)}
+  .mini.ok:hover{background:rgba(63,214,140,.12)}
+
   /* ---------- modal ---------- */
   #modal{
     position:fixed; inset:0; display:none; align-items:center; justify-content:center;
@@ -232,10 +271,16 @@
     <div class="panel">
       <h3>Worker report</h3>
       <div class="row">
-        <input id="fWorker" placeholder="W3" style="flex:1" aria-label="Worker ID">
+        <input id="fWorker" placeholder="W1" style="flex:1" aria-label="Worker ID">
         <button id="btnWorker" class="btn ghost">Report</button>
+        <button id="btnWorkerMail" class="btn ghost" title="Email report with photo">Email</button>
       </div>
-      <div class="hint">Video pe worker ke box ka number likho — poori history milegi.</div>
+      <div class="hint">Worker ka ID likho (W1, P5...) — poori history + photo milegi.</div>
+    </div>
+
+    <div class="panel">
+      <h3>People — AI ne pehchane</h3>
+      <div id="people"><div class="empty">Jaise hi koi banda camera pe aayega, system usay yaad kar lega aur yahan photo ke saath dikhaega. Jo banda machines pe zyada time guzarega usay worker approve karo.</div></div>
     </div>
 
     <div class="panel">
@@ -327,10 +372,56 @@ function renderCams(cams){
     }
     el.querySelector('.dot').className = 'dot' + (c.status==='online' ? ' online':'');
     el.querySelector('.nm').textContent = c.name;
-    el.querySelector('.ct').textContent = c.processing === false
+    let ct = c.processing === false
       ? 'live view only'
       : `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
+    if(c.processing !== false && c.at_machine !== undefined)
+      ct += ` · ${c.at_machine} at machine`;
+    el.querySelector('.ct').textContent = ct;
   }
+}
+
+function renderPeople(people){
+  const box = $('people');
+  if(!people.length) return;
+  box.innerHTML = people.map(p=>{
+    const tag = p.label==='worker' ? '<span class="tag worker">worker</span>'
+              : p.label==='visitor' ? '<span class="tag visitor">visitor</span>'
+              : p.candidate ? '<span class="tag candidate">worker? approve karo</span>' : '';
+    const img = p.crop
+      ? `<img src="/crops/${p.crop}?t=${Math.floor(Date.now()/60000)}" alt="">`
+      : '<div class="noimg">?</div>';
+    const live = p.live
+      ? `<b>abhi ${p.live.camera} pe — ${p.live.state}${p.live.machine ? ' @ '+p.live.machine : ''}</b>`
+      : '';
+    const acts = p.label==='unknown'
+      ? `<div class="acts">
+           <button class="mini ok" onclick="labelPerson(${p.id},'worker')">✓ Worker</button>
+           <button class="mini" onclick="labelPerson(${p.id},'visitor')">Visitor</button>
+         </div>`
+      : `<div class="acts">
+           <button class="mini" onclick="labelPerson(${p.id},'unknown')">Undo</button>
+         </div>`;
+    return `<div class="person${p.candidate ? ' candidate':''}">
+      ${img}
+      <div class="info">
+        <div class="who">${p.display}${tag}</div>
+        <div class="st">machines pe <b>${p.machine_min} min</b> · total ${p.total_min} min ${live}</div>
+      </div>
+      ${acts}
+    </div>`;
+  }).join('');
+}
+
+async function labelPerson(id, label){
+  const r = await fetch(`/api/persons/${id}/label`, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({label})});
+  if(r.ok){
+    const d = await r.json();
+    toast(label==='worker' ? `Approved: ab yeh ${d.display} hai`
+        : label==='visitor' ? 'Marked as visitor' : 'Wapis unknown kar diya');
+    refreshSlow();
+  } else { const e = await r.json(); toast(e.detail||'Failed'); }
 }
 
 function renderAlerts(alerts){
@@ -385,12 +476,14 @@ function drawChart(points){
 
 async function refreshSlow(){
   try{
-    const [sessions, hist] = await Promise.all([
+    const [sessions, hist, people] = await Promise.all([
       fetch('/api/sessions?limit=20').then(r=>r.json()),
       fetch('/api/history?minutes=60').then(r=>r.json()),
+      fetch('/api/persons').then(r=>r.ok ? r.json() : []),
     ]);
     renderSessions(sessions);
     drawChart(hist);
+    renderPeople(people);
   }catch(e){}
 }
 
@@ -430,6 +523,18 @@ $('btnWorker').onclick = async ()=>{
   modal.style.display = 'flex';
 };
 $('fWorker').addEventListener('keydown', e=>{ if(e.key==='Enter') $('btnWorker').click(); });
+
+$('btnWorkerMail').onclick = async ()=>{
+  const wid = $('fWorker').value.trim();
+  if(!wid){ toast('Worker number likho, e.g. W1'); return; }
+  $('btnWorkerMail').disabled = true;
+  try{
+    const r = await fetch('/api/worker/'+encodeURIComponent(wid)+'?email=true');
+    if(!r.ok){ const e = await r.json(); toast(e.detail||'Failed'); }
+    else{ const d = await r.json(); toast(d.email_status || 'Email sent'); }
+  }catch(e){ toast('Email failed'); }
+  $('btnWorkerMail').disabled = false;
+};
 
 refresh();
 refreshSlow();

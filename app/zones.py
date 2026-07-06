@@ -21,3 +21,25 @@ class Zone:
     def contains(self, point, w: int, h: int) -> bool:
         poly = self.pixels(w, h)
         return cv2.pointPolygonTest(poly, (float(point[0]), float(point[1])), False) >= 0
+
+
+class MachineZones:
+    """Named machine areas per camera. A worker whose feet are inside one is
+    'at' that machine — the core of the active/idle rule."""
+
+    def __init__(self, entries: list[dict] | None):
+        self.zones: list[tuple[str, Zone]] = []
+        for i, e in enumerate(entries or []):
+            poly = e.get("zone") or e.get("poly")
+            if poly:
+                self.zones.append((e.get("name") or f"machine-{i + 1}", Zone(poly, 99)))
+
+    def __bool__(self):
+        return bool(self.zones)
+
+    def at(self, point, w: int, h: int) -> str | None:
+        """Machine name if the point is inside any machine zone, else None."""
+        for name, z in self.zones:
+            if z.contains(point, w, h):
+                return name
+        return None

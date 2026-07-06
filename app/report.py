@@ -70,15 +70,19 @@ def build_stats(hours: float = 12.0) -> dict:
         })
     # Recent individual worker sessions (most recent first)
     workers = []
-    for cam, tid, start, end, dur, act, posture in db.query(
-        """SELECT camera, track_id, start_ts, end_ts, duration, active_pct, posture
-           FROM sessions WHERE end_ts >= ? ORDER BY end_ts DESC LIMIT 15""",
+    for cam, tid, start, end, dur, act, posture, pid, mach, plabel, wno in db.query(
+        """SELECT s.camera, s.track_id, s.start_ts, s.end_ts, s.duration,
+                  s.active_pct, s.posture, s.person_id, s.machine_pct,
+                  p.label, p.worker_no
+           FROM sessions s LEFT JOIN persons p ON p.id = s.person_id
+           WHERE s.end_ts >= ? ORDER BY s.end_ts DESC LIMIT 15""",
         (since,),
     ):
         mins = dur / 60
         act_min = mins * (act or 0) / 100
+        who = db.person_display(plabel, wno, pid) if pid else f"W{tid}"
         workers.append({
-            "worker": f"W{tid}",
+            "worker": who,
             "camera": cam,
             "from": datetime.fromtimestamp(start).strftime("%H:%M"),
             "to": datetime.fromtimestamp(end).strftime("%H:%M"),
@@ -86,7 +90,25 @@ def build_stats(hours: float = 12.0) -> dict:
             "active_pct": act,
             "active_min": round(act_min, 1),
             "idle_min": round(mins - act_min, 1),
+            "machine_min": round(mins * (mach or 0) / 100, 1),
             "posture": posture or "unknown",
+        })
+
+    # Known people: approved workers + anyone with real machine time
+    people = []
+    for pid, label, wno, total_s, machine_s, crop in db.query(
+        """SELECT id, label, worker_no, total_s, machine_s, best_crop
+           FROM persons
+           WHERE label = 'worker' OR machine_s >= 120
+           ORDER BY CASE label WHEN 'worker' THEN 0 ELSE 1 END,
+                    worker_no, machine_s DESC LIMIT 12"""
+    ):
+        people.append({
+            "id": db.person_display(label, wno, pid),
+            "status": label,
+            "total_min": round((total_s or 0) / 60, 1),
+            "machine_min": round((machine_s or 0) / 60, 1),
+            "crop": crop,
         })
 
     return {
@@ -94,6 +116,7 @@ def build_stats(hours: float = 12.0) -> dict:
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "cameras": cams,
         "workers": workers,
+        "people": people,
     }
 
 
@@ -133,6 +156,15 @@ def render_template(stats: dict) -> str:
                     f"    {hb['hour']}  avg workers {hb['avg_workers']:<4}  "
                     f"active {hb['active_pct']}%"
                 )
+    people = stats.get("people") or []
+    if people:
+        lines += ["", "PEOPLE (identified by AI)", "-" * 55]
+        for p in people:
+            tag = p["status"].upper() if p["status"] != "unknown" else "UNCONFIRMED"
+            lines.append(
+                f"  {p['id']:<5} {tag:<12} seen {p['total_min']:>6} min, "
+                f"at machines {p['machine_min']:>6} min"
+            )
     workers = stats.get("workers") or []
     if workers:
         lines += ["", "WORKER DETAIL (recent visits)", "-" * 55]
@@ -140,7 +172,8 @@ def render_template(stats: dict) -> str:
             lines.append(
                 f"  {wk['worker']:<5} {wk['camera']:<16} {wk['from']}-{wk['to']}  "
                 f"{wk['minutes']:>5} min (active {wk['active_min']}, "
-                f"idle {wk['idle_min']})  {wk['posture']}"
+                f"idle {wk['idle_min']}, machine {wk.get('machine_min', 0)})  "
+                f"{wk['posture']}"
             )
     lines += ["", "-" * 55,
               "DEX AI Monitoring System — automated report."]
@@ -152,10 +185,12 @@ PROMPT = (
     "built by DEX AI. Write a short, professional shift report (max 300 words) "
     "for a factory owner in simple English based on this data. Use short "
     "sections with clear headings. Describe individual workers by their IDs "
-    "(W1, W2...) — what they did, how long they stayed, whether they were "
-    "standing and working or sitting idle. Mention alerts, then end with one "
-    "practical recommendation. Output plain text only, no markdown symbols. "
-    "Data:\n"
+    "(W1, W2... are approved workers; P-numbers are unidentified people; "
+    "V-numbers are visitors) — what they did, how long they stayed, how much "
+    "time they spent working at machines versus idle. 'machine minutes' means "
+    "time standing at a machine, which counts as productive work. Mention "
+    "alerts, then end with one practical recommendation. Output plain text "
+    "only, no markdown symbols. Data:\n"
 )
 
 
@@ -209,10 +244,28 @@ def llm_report(stats: dict) -> str | None:
     return None  # template fallback
 
 
-def snapshot_attachments(hours: float, limit: int = 5) -> list[Path]:
-    """Alert snapshots worth attaching — idle workers first, newest first.
-    Missing files are skipped silently."""
+def snapshot_attachments(hours: float, limit: int = 7) -> list[Path]:
+    """Photos worth attaching: each identified worker's own cropped photo
+    first, then idle-worker alert snapshots, newest first. Missing files are
+    skipped silently."""
     since = time.time() - hours * 3600
+    paths: list[Path] = []
+    seen = set()
+
+    # Per-worker cropped photos (people seen in this window).
+    crop_dir = SNAP_DIR / "persons"
+    for (crop,) in db.query(
+        """SELECT best_crop FROM persons
+           WHERE best_crop IS NOT NULL AND last_seen >= ?
+           ORDER BY CASE label WHEN 'worker' THEN 0 ELSE 1 END,
+                    worker_no, machine_s DESC LIMIT 4""",
+        (since,),
+    ):
+        p = crop_dir / crop
+        if crop not in seen and p.is_file():
+            seen.add(crop)
+            paths.append(p)
+
     rows = db.query(
         """SELECT snapshot FROM alerts
            WHERE ts >= ? AND snapshot IS NOT NULL
@@ -220,8 +273,6 @@ def snapshot_attachments(hours: float, limit: int = 5) -> list[Path]:
            LIMIT ?""",
         (since, limit * 2),
     )
-    paths = []
-    seen = set()
     for (name,) in rows:
         p = SNAP_DIR / name
         if name not in seen and p.is_file():

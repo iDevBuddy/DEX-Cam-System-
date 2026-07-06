@@ -8,7 +8,12 @@ from pathlib import Path
 
 import cv2
 
-MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "pose_landmarker_lite.task"
+_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+_FULL = _MODELS_DIR / "pose_landmarker_full.task"
+_LITE = _MODELS_DIR / "pose_landmarker_lite.task"
+# Full model when available (noticeably better on far/odd-angle workers;
+# still fine on CPU at ~1 check per worker per second), else lite.
+MODEL_PATH = _FULL if _FULL.exists() else _LITE
 
 # Pose landmark indices (33-point model)
 L_SHOULDER, R_SHOULDER = 11, 12

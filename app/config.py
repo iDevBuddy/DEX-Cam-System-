@@ -7,7 +7,8 @@ import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT / "config.yaml"
+# DEX_CONFIG lets tests run against a scratch config without touching the real one.
+CONFIG_PATH = Path(os.environ.get("DEX_CONFIG") or ROOT / "config.yaml")
 
 load_dotenv(ROOT / ".env")
 

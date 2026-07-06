@@ -3,12 +3,19 @@
 AI-powered factory worker monitoring using your **existing CCTV cameras**.
 Connect any Hikvision (or ONVIF) NVR/DVR via RTSP and watch live:
 
-- 👷 **Worker detection & tracking** — every person gets a persistent ID
-- 🟢 **Active / Idle classification** — movement-based, per worker
-- 📐 **Work zones** — worker count per zone, overcrowding + unmanned-machine alerts
+- 👷 **Person re-identification (OSNet)** — the system *remembers* every person
+  by appearance: same ID across cameras, across days, across restarts
+- ✅ **Worker approval** — people who spend real time at machines are flagged;
+  the owner approves each as **Worker (W1, W2…)** or **Visitor**, with photo
+- 🏭 **Machine zones** — standing at a machine = ACTIVE (even motionless);
+  away from every machine (or sitting anywhere) = IDLE
+- 🧍 **Posture (MediaPipe full)** — sitting / standing per worker
+- 🔍 **Human vs object filter** — a machine part misread as a person is
+  quietly dropped after a minute of zero movement, zero pose, low confidence
 - 📱 **Mobile phone detection** — instant alert with snapshot
-- 📊 **Live web dashboard** — all cameras, counts, and alert log in one screen
-- 📧 **AI-written shift reports** — one click, emailed to you
+- 📊 **Live web dashboard** — cameras, machine-time leaderboard, approval panel
+- 📧 **AI-written reports** — per-shift and per-worker, each worker's own
+  cropped photo attached, emailed on click
 
 > The full production deployment (Phase 1) extends this with a 13-camera GPU
 > pipeline, TimescaleDB analytics, scheduled PDF shift reports, Telegram
@@ -81,12 +88,15 @@ Copy `.env.example` to `.env`:
 ## How It Works
 
 ```
-NVR / DVR ──RTSP──▶ Frame capture ──▶ YOLOv8 detection ──▶ ByteTrack IDs
-(your cameras)      (auto-reconnect)   (person + phone)         │
-                                                                ▼
-Dashboard ◀── FastAPI ◀── SQLite ◀── zone counts / active-idle / alerts
+NVR / DVR ──RTSP──▶ Frame capture ──▶ YOLO11 detection ──▶ ByteTrack IDs
+(your cameras)      (auto-reconnect)   (person + phone)        │
+                                                               ▼
+                              OSNet re-id (who is this?) + MediaPipe posture
+                                                               │
+                                                               ▼
+Dashboard ◀── FastAPI ◀── SQLite ◀── machine zones / active-idle / alerts
     │
-    └─▶ Shift report (Gemini AI) ──▶ Email
+    └─▶ Shift + per-worker reports (LLM) ──▶ Email with worker photos
 ```
 
 Runs fully **on-premises** — no video ever leaves your network. GPU (NVIDIA)

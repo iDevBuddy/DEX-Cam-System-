@@ -67,11 +67,11 @@ class AlertManager:
                 frame, self.phone_cooldown,
             )
 
-    def fire_idle_worker(self, track_id: int, idle_seconds: int, frame):
+    def fire_idle_worker(self, who: str, idle_seconds: int, frame):
         """Photo evidence of a worker who has been idle past the threshold.
         Per-worker cooldown so one sleepy worker doesn't flood the log."""
         self._fire(
             "idle_worker",
-            f"Worker W{track_id} idle for {idle_seconds}s on '{self.camera}'",
-            frame, self.idle_worker_cooldown, key=f"idle_w{track_id}",
+            f"Worker {who} idle for {idle_seconds}s on '{self.camera}'",
+            frame, self.idle_worker_cooldown, key=f"idle_{who}",
         )

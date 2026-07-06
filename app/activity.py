@@ -43,6 +43,15 @@ class ActivityTracker:
         self._purge(now)
         return states
 
+    def spread(self, tid: int) -> float | None:
+        """Pixel spread of recent movement — None if we lack history."""
+        hist = self.history.get(int(tid))
+        if not hist or len(hist) < 3:
+            return None
+        xs = [p[1] for p in hist]
+        ys = [p[2] for p in hist]
+        return max(max(xs) - min(xs), max(ys) - min(ys))
+
     def _purge(self, now: float):
         gone = [tid for tid, t in self.last_seen.items() if now - t > 10.0]
         for tid in gone:

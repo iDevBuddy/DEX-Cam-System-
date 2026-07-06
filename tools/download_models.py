@@ -11,6 +11,13 @@ MODELS = {
     "pose_landmarker_lite.task":
         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
         "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+    "pose_landmarker_full.task":
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+        "pose_landmarker_full/float16/latest/pose_landmarker_full.task",
+    # OSNet person re-identification (torchreid model zoo, via Google Drive)
+    "osnet_x0_25_msmt17.pt":
+        "https://drive.google.com/uc?id=1sSwXSUlj4_tHZequ_iZ8w_Jh0VaRQMqF"
+        "&export=download",
 }
 
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
