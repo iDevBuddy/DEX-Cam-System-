@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS person_embs (
     emb       BLOB NOT NULL         -- 512 x float32, L2-normalized
 );
 CREATE INDEX IF NOT EXISTS idx_pembs_person ON person_embs (person_id);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 MIGRATIONS = [
@@ -173,6 +178,35 @@ def recent_sessions(limit: int = 30) -> list[dict]:
 
 
 # ---------------- persons (identity gallery) ----------------
+
+def reset_persons_if_model_changed(model_name: str, crop_dir) -> bool:
+    """Embeddings only make sense within one re-id model's space. When the
+    model changes, wipe the gallery (workers just get re-approved once).
+    Runs synchronously at startup, before camera threads exist."""
+    con = _connect()
+    try:
+        con.executescript(SCHEMA)
+        row = con.execute("SELECT value FROM meta WHERE key='reid_model'").fetchone()
+        # Galleries created before the meta table existed were built by x0_25.
+        prev = row[0] if row else "osnet_x0_25_msmt17.pt"
+        changed = prev != model_name
+        if changed:
+            con.execute("DELETE FROM persons")
+            con.execute("DELETE FROM person_embs")
+            con.execute("UPDATE sessions SET person_id = NULL")
+            try:
+                for f in Path(crop_dir).glob("P*.jpg"):
+                    f.unlink()
+            except Exception:
+                pass
+        con.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('reid_model', ?)",
+            (model_name,),
+        )
+        con.commit()
+        return changed
+    finally:
+        con.close()
 
 def create_person(first_seen: float, embs: list[bytes]) -> int:
     """Synchronous insert — the new person id is needed immediately.

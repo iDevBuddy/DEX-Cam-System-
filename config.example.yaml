@@ -3,11 +3,14 @@
 # Cameras can also be added live from the dashboard (they get saved to config.yaml).
 
 inference:
-  model: models/yolo11n.pt
-  confidence: 0.25
-  infer_fps: 4          # frames analyzed per second per camera (CPU-friendly)
-  imgsz: 416            # 640 on GPU builds
+  model: models/yolo11s.pt   # yolo11n.pt on very weak CPUs
+  # Track START threshold. Detection runs down to 0.12 internally; weak
+  # detections keep existing tracks alive (two-threshold tracking).
+  confidence: 0.35
+  infer_fps: 2          # AI passes per second per camera (video stays smooth)
+  imgsz: 512            # 640 on GPU builds
   use_reid: true        # OSNet person re-identification (persistent worker IDs)
+  enhance: true         # auto gamma/CLAHE on dark or washed-out frames
 
 activity:
   idle_after_seconds: 10

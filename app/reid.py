@@ -19,7 +19,12 @@ import numpy as np
 from . import db
 from .alerts import SNAP_DIR
 
-MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "osnet_x0_25_msmt17.pt"
+_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+# Prefer the big OSNet when present (noticeably better identity matching on
+# blurry CCTV crops); embeddings run ~1x/2s per worker so CPU cost is trivial.
+_CANDIDATES = ["osnet_x1_0_msmt17.pt", "osnet_x0_25_msmt17.pt"]
+MODEL_PATH = next((_MODELS_DIR / n for n in _CANDIDATES if (_MODELS_DIR / n).exists()),
+                  _MODELS_DIR / _CANDIDATES[-1])
 CROP_DIR = SNAP_DIR / "persons"
 
 # Matching thresholds (cosine similarity of L2-normalized embeddings).
@@ -53,9 +58,11 @@ class ReID:
         self._last_flush = time.time()
         try:
             import torch
-            from .osnet import osnet_x0_25
+            from . import osnet as osnet_mod
 
-            model = osnet_x0_25(num_classes=1, pretrained=False)
+            builder = (osnet_mod.osnet_x1_0 if "x1_0" in MODEL_PATH.name
+                       else osnet_mod.osnet_x0_25)
+            model = builder(num_classes=1, pretrained=False)
             ckpt = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
             sd = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
             sd = {k.replace("module.", ""): v for k, v in sd.items()
@@ -64,6 +71,9 @@ class ReID:
             model.eval()
             self._torch = torch
             self._model = model
+            # Embeddings from different OSNet variants live in different
+            # spaces — a model change invalidates the whole gallery.
+            db.reset_persons_if_model_changed(MODEL_PATH.name, CROP_DIR)
             self._load_gallery()
             CROP_DIR.mkdir(parents=True, exist_ok=True)
             self.ok = True

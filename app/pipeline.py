@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import supervision as sv
 
-from . import db, detector, ids, reid
+from . import db, detector, enhance, ids, reid
 from .activity import ActivityTracker
 from .alerts import AlertManager
 from .camera import LatestFrameReader
@@ -32,13 +32,24 @@ GREY = (140, 140, 140)    # suspected non-human
 MACHINE_GRACE = 3.0       # s a worker stays "at machine" after stepping off
 EMBED_EVERY = 2.0         # s between re-id samples per track
 
+# Two-threshold detection (the low-quality-camera fix). The detector runs at
+# a floor confidence so weak evidence is never thrown away; ByteTrack only
+# STARTS a track from a strong detection (per-camera threshold) but KEEPS an
+# existing track alive on weak ones. A worker is confirmed while walking in
+# (easy to detect), then stays tracked while seated/occluded/turned away even
+# when the detector is barely sure — which is exactly when cheap cameras fail.
+DETECT_FLOOR = 0.12       # detector floor; never used to create tracks
+PHONE_CONF = 0.35         # phones still need a confident detection
+DISPLAY_FPS = 8.0         # smooth video between (slower) AI passes
+
 # Object filter: a "person" is reclassified as an object ONLY when every one
 # of these holds for a full minute — pose never found, literally zero pixel
 # movement, and weak detector confidence. Any single movement or one
 # successful pose check makes the track immune for life. Deliberately biased:
 # losing a phantom takes a minute; losing a real worker must never happen.
 OBJECT_AFTER = 60.0       # s all conditions must hold before suspecting
-OBJECT_MAX_CONF = 0.50    # mean YOLO confidence below this (machines score low)
+OBJECT_MAX_CONF = 0.45    # track's PEAK YOLO confidence stays below this
+                          # (real people spike high at some point; machines don't)
 OBJECT_MOVE_PX = 0.004    # movement above this fraction of width = human
 
 
@@ -55,7 +66,20 @@ class CameraWorker(threading.Thread):
         self.zone = zone
         self.machines = MachineZones(machine_zones)
         self.inf_cfg = cfg["inference"]
-        self.tracker = sv.ByteTrack()
+        fps = float(self.inf_cfg.get("infer_fps", 2))
+        # Two-threshold tracking: start tracks at self.conf, continue them on
+        # detections down to DETECT_FLOOR; survive ~8s of missed detections;
+        # need 2 consecutive hits before a track is real (kills one-frame FPs).
+        # ByteTrack internally demands activation_threshold + 0.1 to CREATE a
+        # track, so subtract 0.1 to make config 'confidence' the real start bar.
+        self.tracker = sv.ByteTrack(
+            track_activation_threshold=max(0.05, self.conf - 0.1),
+            lost_track_buffer=240,          # x frame_rate/30 => ~8s at any fps
+            minimum_matching_threshold=0.8,
+            frame_rate=int(round(fps)) or 1,
+            minimum_consecutive_frames=2,
+        )
+        self.enhance_enabled = bool(self.inf_cfg.get("enhance", True))
         self.activity = ActivityTracker(cfg["activity"])
         self.alerts = AlertManager(name, cfg["alerts"])
         self.status = "starting"
@@ -64,6 +88,7 @@ class CameraWorker(threading.Thread):
         self.stop_event = threading.Event()
         self._jpeg_lock = threading.Lock()
         self._latest_jpeg: bytes | None = None
+        self._last_draw = None  # cached annotations for between-inference frames
         self._last_db_log = 0.0
         # Stability: median of recent counts kills 0→1→0 flicker.
         self._count_hist = deque(maxlen=5)
@@ -100,11 +125,15 @@ class CameraWorker(threading.Thread):
     def run(self):
         reader = LatestFrameReader(self.source_str)
         reader.start()
-        interval = 1.0 / float(self.inf_cfg.get("infer_fps", 5))
+        interval = 1.0 / float(self.inf_cfg.get("infer_fps", 2))
+        next_infer = 0.0
 
         while not self.stop_event.is_set():
             if not reader.connected:
                 self.status = "reconnecting"
+                self.counts = {k: 0 for k in self.counts}
+                self.live = {}
+                self._last_draw = None
                 self._set_offline_frame()
                 time.sleep(1.0)
                 continue
@@ -116,16 +145,20 @@ class CameraWorker(threading.Thread):
 
             t0 = time.monotonic()
             try:
-                if self.process_enabled:
+                if not self.process_enabled:
+                    self._encode_view_only(frame)
+                elif t0 >= next_infer:
+                    # Heavy AI pass at infer_fps...
+                    next_infer = t0 + interval
                     self._process(frame)
                 else:
-                    self._encode_view_only(frame)
+                    # ...while the video stays smooth in between: fresh frame,
+                    # last known boxes.
+                    self._encode_cached(frame)
             except Exception:
                 # Never let one bad frame kill the camera thread.
                 time.sleep(0.2)
-            # Keep our own pace; the reader keeps the frame fresh meanwhile.
-            pace = interval if self.process_enabled else 0.12
-            time.sleep(max(0.0, pace - (time.monotonic() - t0)))
+            time.sleep(max(0.0, 1.0 / DISPLAY_FPS - (time.monotonic() - t0)))
 
         reader.stop()
         if self.reid:
@@ -138,15 +171,18 @@ class CameraWorker(threading.Thread):
     # ---------------- processing ----------------
 
     def _process(self, frame):
+        if self.enhance_enabled:
+            frame = enhance.maybe_enhance(frame)
         h, w = frame.shape[:2]
         result = detector.predict(
             frame,
-            conf=self.conf,
-            imgsz=int(self.inf_cfg.get("imgsz", 640)),
+            conf=DETECT_FLOOR,
+            imgsz=int(self.inf_cfg.get("imgsz", 512)),
         )
         det = sv.Detections.from_ultralytics(result)
         persons = det[det.class_id == detector.PERSON]
         phones = det[det.class_id == detector.CELL_PHONE]
+        phones = phones[phones.confidence >= PHONE_CONF]
 
         # Drop implausibly small "people" (far-away noise, reflections).
         if len(persons) > 0:
@@ -234,8 +270,10 @@ class CameraWorker(threading.Thread):
             for tid, st in h_states.items()
         }
 
-        annotated = self._annotate(frame, tracked, raw_ids, states, phones,
-                                   w, h, postures, at_machine)
+        self._last_draw = (tracked.xyxy.copy(), list(raw_ids), dict(states),
+                           phones.xyxy.copy(), dict(postures), dict(at_machine))
+        annotated = self._annotate(frame, tracked.xyxy, raw_ids, states,
+                                   phones.xyxy, w, h, postures, at_machine)
         self.alerts.check(self.counts["workers"], self.zone.max_workers,
                           len(phones), annotated)
         self._check_idle_workers(h_states, annotated)
@@ -402,9 +440,8 @@ class CameraWorker(threading.Thread):
                  else [1.0] * len(raw_ids))
         for tid, conf in zip(raw_ids, confs):
             self._t_first.setdefault(tid, now)
-            c = self._t_conf.setdefault(tid, [0.0, 0])
-            c[0] += float(conf)
-            c[1] += 1
+            peak = self._t_conf.setdefault(tid, [0.0])
+            peak[0] = max(peak[0], float(conf))
             if tid in self._t_human:
                 continue
             spread = self.activity.spread(tid)
@@ -414,7 +451,7 @@ class CameraWorker(threading.Thread):
                 self._suspect.discard(tid)
                 continue
             if (now - self._t_first[tid] >= OBJECT_AFTER
-                    and c[0] / max(c[1], 1) < OBJECT_MAX_CONF):
+                    and peak[0] < OBJECT_MAX_CONF):
                 self._suspect.add(tid)
         # Drop bookkeeping for tracks gone > 60s.
         live = set(raw_ids)
@@ -427,7 +464,21 @@ class CameraWorker(threading.Thread):
 
     # ---------------- drawing ----------------
 
-    def _annotate(self, frame, tracked, raw_ids, states, phones, w, h,
+    def _encode_cached(self, frame):
+        """Fresh frame + last known annotations => smooth video while the
+        detector only runs a couple of times a second."""
+        if self.enhance_enabled:
+            frame = enhance.maybe_enhance(frame)
+        h, w = frame.shape[:2]
+        if self._last_draw is None:
+            self._encode(self._annotate(frame, np.empty((0, 4)), [], {},
+                                        np.empty((0, 4)), w, h))
+            return
+        boxes, raw_ids, states, phone_boxes, postures, at_machine = self._last_draw
+        self._encode(self._annotate(frame, boxes, raw_ids, states, phone_boxes,
+                                    w, h, postures, at_machine))
+
+    def _annotate(self, frame, boxes, raw_ids, states, phone_boxes, w, h,
                   postures=None, at_machine=None):
         out = frame.copy()
 
@@ -447,7 +498,7 @@ class CameraWorker(threading.Thread):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, MAGENTA, 1, cv2.LINE_AA)
 
         # Workers
-        for (x1, y1, x2, y2), tid in zip(tracked.xyxy, raw_ids):
+        for (x1, y1, x2, y2), tid in zip(boxes, raw_ids):
             tid = int(tid)
             p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
             if tid in self._suspect:
@@ -471,7 +522,7 @@ class CameraWorker(threading.Thread):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
         # Phones
-        for x1, y1, x2, y2 in phones.xyxy:
+        for x1, y1, x2, y2 in phone_boxes:
             cv2.rectangle(out, (int(x1), int(y1)), (int(x2), int(y2)), RED, 2)
             cv2.putText(out, "PHONE", (int(x1), int(y1) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, RED, 2, cv2.LINE_AA)
