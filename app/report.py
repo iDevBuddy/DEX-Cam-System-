@@ -70,10 +70,10 @@ def build_stats(hours: float = 12.0) -> dict:
         })
     # Recent individual worker sessions (most recent first)
     workers = []
-    for cam, tid, start, end, dur, act, posture, pid, mach, plabel, wno in db.query(
+    for cam, tid, start, end, dur, act, posture, pid, mach, plabel, wno, idl, sitm in db.query(
         """SELECT s.camera, s.track_id, s.start_ts, s.end_ts, s.duration,
                   s.active_pct, s.posture, s.person_id, s.machine_pct,
-                  p.label, p.worker_no
+                  p.label, p.worker_no, s.idle_pct, s.sit_machine_pct
            FROM sessions s LEFT JOIN persons p ON p.id = s.person_id
            WHERE s.end_ts >= ? ORDER BY s.end_ts DESC LIMIT 15""",
         (since,),
@@ -89,10 +89,41 @@ def build_stats(hours: float = 12.0) -> dict:
             "minutes": round(mins, 1),
             "active_pct": act,
             "active_min": round(act_min, 1),
-            "idle_min": round(mins - act_min, 1),
+            "idle_min": round(mins * (idl or 0) / 100, 1),
             "machine_min": round(mins * (mach or 0) / 100, 1),
+            "sitting_at_machine_min": round(mins * (sitm or 0) / 100, 1),
             "posture": posture or "unknown",
         })
+
+    # Per-person discipline summary: active vs standing/sitting + alerts
+    discipline = []
+    for pid, plabel, wno, act_min, mach_min, sit_min in db.query(
+        """SELECT s.person_id, p.label, p.worker_no,
+                  SUM(s.duration * s.active_pct / 100.0) / 60.0,
+                  SUM(s.duration * COALESCE(s.machine_pct, 0) / 100.0) / 60.0,
+                  SUM(s.duration * COALESCE(s.sit_machine_pct, 0) / 100.0) / 60.0
+           FROM sessions s LEFT JOIN persons p ON p.id = s.person_id
+           WHERE s.end_ts >= ? AND s.person_id IS NOT NULL
+           GROUP BY s.person_id ORDER BY 4 DESC LIMIT 10""",
+        (since,),
+    ):
+        who = db.person_display(plabel, wno, pid)
+        n_alerts = db.query(
+            "SELECT COUNT(*) FROM alerts WHERE ts >= ? AND type='posture' "
+            "AND message LIKE ?", (since, f"Worker {who} %"))[0][0]
+        discipline.append({
+            "worker": who,
+            "active_min": round(act_min or 0, 1),
+            "standing_min": round(max(0.0, (mach_min or 0) - (sit_min or 0)), 1),
+            "sitting_min": round(sit_min or 0, 1),
+            "posture_alerts": n_alerts,
+        })
+
+    machines = db.machine_utilization(since)
+    machine_visits = db.recent_machine_visits(since, limit=12)
+    for v in machine_visits:
+        v["start"] = datetime.fromtimestamp(v["start"]).strftime("%H:%M")
+        v["end"] = datetime.fromtimestamp(v["end"]).strftime("%H:%M")
 
     # Known people: approved workers + anyone with real machine time
     people = []
@@ -117,6 +148,9 @@ def build_stats(hours: float = 12.0) -> dict:
         "cameras": cams,
         "workers": workers,
         "people": people,
+        "discipline": discipline,
+        "machines": machines,
+        "machine_visits": machine_visits,
     }
 
 
@@ -156,6 +190,14 @@ def render_template(stats: dict) -> str:
                     f"    {hb['hour']}  avg workers {hb['avg_workers']:<4}  "
                     f"active {hb['active_pct']}%"
                 )
+    machines = stats.get("machines") or []
+    if machines:
+        lines += ["", "MACHINE UTILIZATION", "-" * 55]
+        for m in machines:
+            lines.append(
+                f"  {m['machine']:<14} ({m['camera']}): running "
+                f"{m['running_min']} of {m['window_min']} min"
+            )
     people = stats.get("people") or []
     if people:
         lines += ["", "PEOPLE (identified by AI)", "-" * 55]
@@ -164,6 +206,26 @@ def render_template(stats: dict) -> str:
             lines.append(
                 f"  {p['id']:<5} {tag:<12} seen {p['total_min']:>6} min, "
                 f"at machines {p['machine_min']:>6} min"
+            )
+    discipline = stats.get("discipline") or []
+    if discipline:
+        lines += ["", "WORK DISCIPLINE (standing vs sitting at machines)", "-" * 55]
+        for d in discipline:
+            lines.append(
+                f"  {d['worker']:<5} {d['active_min']:g} min active "
+                f"({d['standing_min']:g} standing / {d['sitting_min']:g} sitting"
+                + (f" — {d['posture_alerts']} posture alert(s)"
+                   if d["posture_alerts"] else "") + ")"
+            )
+    visits = stats.get("machine_visits") or []
+    if visits:
+        lines += ["", "MACHINE VISITS", "-" * 55]
+        for v in visits:
+            lines.append(
+                f"  {v['worker']:<5} {v['machine']:<14} {v['start']}-{v['end']} "
+                f"({v['minutes']} min, machine running {v['running_pct']:g}%)"
+                + (f"  <- switched from {v['switched_from']}"
+                   if v.get("switched_from") else "")
             )
     workers = stats.get("workers") or []
     if workers:
@@ -182,15 +244,18 @@ def render_template(stats: dict) -> str:
 
 PROMPT = (
     "You are the reporting module of an AI factory worker-monitoring system "
-    "built by DEX AI. Write a short, professional shift report (max 300 words) "
+    "built by DEX AI. Write a short, professional shift report (max 350 words) "
     "for a factory owner in simple English based on this data. Use short "
     "sections with clear headings. Describe individual workers by their IDs "
     "(W1, W2... are approved workers; P-numbers are unidentified people; "
-    "V-numbers are visitors) — what they did, how long they stayed, how much "
-    "time they spent working at machines versus idle. 'machine minutes' means "
-    "time standing at a machine, which counts as productive work. Mention "
-    "alerts, then end with one practical recommendation. Output plain text "
-    "only, no markdown symbols. Data:\n"
+    "V-numbers are visitors). Being at a machine counts as productive work "
+    "('active'); away from machines too long counts as idle. Cover machine "
+    "utilization (how long each machine actually ran), each worker's active "
+    "time, and work discipline: standing versus SITTING at machines — the "
+    "owner requires standing work, so sitting minutes and posture alerts are "
+    "problems worth naming. Mention machine switches and alerts, then end "
+    "with one practical recommendation. Output plain text only, no markdown "
+    "symbols. Data:\n"
 )
 
 

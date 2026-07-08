@@ -69,6 +69,10 @@ def list_cameras():
             "max_workers": w.zone.max_workers,
             "live_ids": sorted({i["display"] for i in w.live.values()
                                 if i["display"] != "..."}),
+            "machines": [
+                {"name": n, **s} for n, s in
+                (w.mstate.states.items() if w.mstate else [])
+            ],
             **w.counts,
         }
         for w in workers.values()
@@ -220,13 +224,13 @@ def merge_persons(keep: int, absorb: int):
 
 @app.get("/api/stats")
 def stats():
-    total = {"workers": 0, "active": 0, "idle": 0}
+    total = {"workers": 0, "active": 0, "neutral": 0, "idle": 0}
     online = 0
     for w in workers.values():
         if w.status == "online":
             online += 1
         for k in total:
-            total[k] += w.counts[k]
+            total[k] += w.counts.get(k, 0)
     alerts_today = db.query(
         "SELECT COUNT(*) FROM alerts WHERE ts >= ?", (time.time() - 86400,)
     )[0][0]
@@ -286,13 +290,36 @@ def worker_report(wid: str, hours: float = 12.0, email: bool = False):
             if info.get("pid") == pid:
                 extra = ""
                 if info.get("machine"):
-                    extra += f" at machine '{info['machine']}'"
-                if info.get("posture"):
+                    extra += (f" at machine '{info['machine']}'"
+                              f" ({'RUNNING' if info.get('machine_running') else 'stopped'})")
+                if info.get("sitting"):
+                    extra += ", SITTING"
+                elif info.get("posture"):
                     extra += f", {info['posture']}"
                 now_lines.append(
                     f"  RIGHT NOW on '{w.cam_name}': {info['state'].upper()}{extra}"
                 )
     lines += now_lines if now_lines else ["  Not visible on any camera right now."]
+
+    # Machine timeline (visits + switches)
+    mv = db.query(
+        """SELECT machine, camera, start_ts, end_ts, running_pct, sitting_pct,
+                  switched_from
+           FROM machine_visits WHERE person_id = ? AND end_ts >= ?
+           ORDER BY end_ts DESC LIMIT 8""",
+        (pid, _t.time() - hours * 3600),
+    )
+    if mv:
+        lines += ["", f"MACHINE TIMELINE (last {hours:g}h):"]
+        for mach, cam, ms, me, rp, sp, sw in mv:
+            lines.append(
+                f"  {mach} ({cam}): "
+                f"{datetime.fromtimestamp(ms).strftime('%H:%M')}-"
+                f"{datetime.fromtimestamp(me).strftime('%H:%M')} "
+                f"({(me - ms) / 60:.1f} min, machine running {rp:g}%"
+                + (f", sitting {sp:g}%" if sp else "")
+                + (f") <- switched from {sw}" if sw else ")")
+            )
 
     lines += ["", f"ALL-TIME: seen {person['total_min']:g} min total, "
                   f"{person['machine_min']:g} min at machines."]
