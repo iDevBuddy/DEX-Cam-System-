@@ -26,6 +26,10 @@ def start_camera(cam: dict):
                      confidence=cam.get("confidence"),
                      machine_zones=cam.get("machine_zones"))
     workers[cam["name"]] = w
+    # Loud and unmissable — a silent process:false once cost a debugging
+    # session ("camera shows people but zero AI").
+    mode = "ON" if w.process_enabled else "OFF  <-- view only, NO detection"
+    print(f"[startup] {cam['name']}: AI processing {mode}", flush=True)
     w.start()
 
 
