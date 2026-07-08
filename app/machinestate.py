@@ -20,18 +20,23 @@ import numpy as np
 
 SCALE_W = 480          # analysis width in px — cheap (~2 ms) and sufficient
 WINDOW_S = 10.0        # smoothing window (seconds)
+PIXEL_DIFF = 12        # a pixel changing more than this gray = "moving pixel"
 BRIGHT_SHIFT = 8.0     # sustained gray-level shift that counts as activity
 BRIGHT_KEEP_S = 14.0   # brightness history horizon
 MIN_VISIBLE = 0.30     # need this fraction of the zone person-free to sample
 PERSON_PAD = 0.10      # inflate person boxes by 10% before cutting them out
 MIN_SAMPLES = 4        # don't call RUNNING/STOPPED before this many samples
 
+# Energy metric: PERCENT of zone pixels that moved (not mean difference) —
+# a lathe chuck is a small part of a big zone; averaging dilutes it away,
+# a moving-pixel fraction does not. Threshold is in percent of zone area.
+
 
 class MachineStateTracker:
     """One per camera. Call update(frame, person_boxes) once per AI pass."""
 
     def __init__(self, machine_entries: list[dict] | None, fps: float,
-                 default_threshold: float = 3.0):
+                 default_threshold: float = 1.5):
         self.entries = []
         for i, e in enumerate(machine_entries or []):
             poly = e.get("zone") or e.get("poly")
@@ -48,6 +53,9 @@ class MachineStateTracker:
         self.states = {e["name"]: {"state": "stopped", "energy": 0.0}
                        for e in self.entries}
         self._prev = None      # previous small grayscale frame
+        self._prev_boxes = []  # person boxes of the previous frame — diffing
+                               # against it leaves a "trail ghost" at the old
+                               # position, which must be masked out too
         self._masks = None     # zone masks at analysis size
         self._size = None      # (w, h) the masks were built for
 
@@ -82,16 +90,19 @@ class MachineStateTracker:
                 cv2.resize(frame_bgr, (sw, sh), interpolation=cv2.INTER_AREA),
                 cv2.COLOR_BGR2GRAY).astype(np.int16)
 
-            # Person-free mask (people can't pretend to be machines).
+            # Person-free mask: current AND previous positions (people can't
+            # pretend to be machines, not even their movement trail).
+            cur_boxes = [list(map(float, b[:4]))
+                         for b in (person_xyxy if person_xyxy is not None else [])]
             free = np.ones((sh, sw), dtype=bool)
-            for box in (person_xyxy if person_xyxy is not None else []):
-                x1, y1, x2, y2 = (float(v) for v in box[:4])
+            for x1, y1, x2, y2 in cur_boxes + self._prev_boxes:
                 px, py = (x2 - x1) * PERSON_PAD, (y2 - y1) * PERSON_PAD
                 a = max(0, int((x1 - px) * scale))
                 b = max(0, int((y1 - py) * scale))
                 c = min(sw, int((x2 + px) * scale) + 1)
                 d = min(sh, int((y2 + py) * scale) + 1)
                 free[b:d, a:c] = False
+            self._prev_boxes = cur_boxes
 
             now = time.time()
             prev = self._prev
@@ -112,7 +123,8 @@ class MachineStateTracker:
 
                 if prev is None:
                     continue
-                energy = float(np.abs(small[valid] - prev[valid]).mean())
+                diff = np.abs(small[valid] - prev[valid])
+                energy = float(100.0 * (diff > PIXEL_DIFF).mean())  # % moving px
                 moving = energy > e["threshold"] or bright_shift > BRIGHT_SHIFT
                 hist = self._hist[name]
                 hist.append(moving)

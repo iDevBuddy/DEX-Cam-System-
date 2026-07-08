@@ -15,7 +15,7 @@ inference:
 activity:
   idle_after_minutes: 7                # away from every machine this long => IDLE (range 5-10)
   machine_switch_window_seconds: 45    # machine A -> B inside this = continuous ACTIVE
-  machine_motion_threshold: 3.0        # motion energy for RUNNING (per-zone: motion_threshold)
+  machine_motion_threshold: 1.5        # % of zone pixels moving = RUNNING (per-zone: motion_threshold)
   sitting_alert_minutes: 3             # sitting at a machine this long => POSTURE alert
   use_pose: true                       # posture info + compliance (never decides active/idle)
   movement_window: 3.0                 # object-filter movement memory

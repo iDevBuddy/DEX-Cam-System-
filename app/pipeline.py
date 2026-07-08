@@ -83,7 +83,7 @@ class CameraWorker(threading.Thread):
         self.sit_alert_s = float(act.get("sitting_alert_minutes", 3)) * 60.0
         self.mstate = MachineStateTracker(
             machine_zones, fps,
-            float(act.get("machine_motion_threshold", 3.0)))
+            float(act.get("machine_motion_threshold", 1.5)))
         self._mstate_logged: dict[str, str] = {}
         # Two-threshold tracking (ByteTrack internally demands
         # activation_threshold + 0.1 to CREATE a track — subtract to make the
@@ -288,7 +288,8 @@ class CameraWorker(threading.Thread):
         for tid in idle_alerts:
             if tid in humans:
                 self.alerts.fire_idle_worker(
-                    self._label(tid), int(self.idle_after_s / 60), annotated)
+                    self._label(tid), max(1, round(self.idle_after_s / 60)),
+                    annotated)
         self._encode(annotated)
 
         if now - self._last_db_log >= 1.0:

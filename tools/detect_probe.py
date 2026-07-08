@@ -70,10 +70,14 @@ def main():
         print("  *** isi liye band hai. Probe phir bhi chalega (apna detector).")
 
     from app import detector, enhance
+    from app.machinestate import MachineStateTracker
     from app.zones import MachineZones, Zone
     detector.init(inf["model"])
     zone = Zone(cam["zone"], 99) if cam.get("zone") else None
     machines = MachineZones(cam.get("machine_zones"))
+    # Machine-state calibration: run each machine ON and OFF while watching
+    # the energy numbers; motion_threshold must sit between the two.
+    mtracker = MachineStateTracker(cam.get("machine_zones"), fps=4.0)
 
     import os
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
@@ -157,6 +161,13 @@ def main():
         print(f"[{time.strftime('%H:%M:%S')}] pass {passes}: {len(rows)} person(s)")
         for line in rows:
             print(line)
+        if mtracker:
+            person_boxes = [b.xyxy[0].tolist() for b in boxes
+                            if int(b.cls[0]) == detector.PERSON]
+            mst = mtracker.update(frame, person_boxes)
+            print("    machines: " + "  ".join(
+                f"{n}={s['state']}(energy {s['energy']})"
+                for n, s in mst.items()))
         if frame_score > best_score:
             best_score, best_frame = frame_score, draw
 

@@ -38,6 +38,27 @@ chal raha hai. Yeh step lazmi hai:
 4. Server restart → cam-5 ke video pe magenta zones machines pe
    baith rahe hain? Worker machine pe khara ho to `ACTIVE @ <naam>`?
 
+## REQUIRED: Machine RUNNING/STOPPED calibration (naya feature)
+
+Har AI camera pe probe chalao aur har machine ko ON aur OFF karwa kar
+`machines:` line ke energy numbers dekho (energy = zone ke kitne % pixels
+hil rahe hain):
+
+```
+.venv\Scripts\python tools\detect_probe.py factory-cam-4 --seconds 30
+```
+
+- Machine ON  → energy ~2-15 hona chahiye
+- Machine OFF → energy ~0-0.5
+- `machine_motion_threshold` (default 1.5) dono ke BEECH mein set karo;
+  kisi ek machine ke liye alag chahiye to us machine zone mein
+  `motion_threshold: X` likho
+- Dashboard/video pe zone ka rang: RUNNING = lime green, stopped = magenta
+- Agar koi machine chalti hui bhi 0 energy de (smooth rotation jo 2fps
+  pe invisible ho) to mujhe batao — us zone ka threshold/brightness
+  signal tune karoon ga. Worker ka ACTIVE is se kharab NAHI hota
+  (machine pe khara = active, chahe RUNNING ho ya stopped)
+
 ## REQUIRED: CPU load check (4 cameras AI ke saath, 5 minute)
 
 Ab pehli dafa CHAR cameras ek saath AI process kar rahe hain (pehle 3

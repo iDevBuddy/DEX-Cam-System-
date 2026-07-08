@@ -163,6 +163,7 @@
   .alert .ty{font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.4px}
   .ty.phone{color:var(--red)} .ty.overcrowding{color:var(--orange)}
   .ty.unmanned{color:var(--cyan)} .ty.idle_worker{color:var(--orange)}
+  .ty.posture{color:var(--red)}
   .alert .tm{color:var(--dim)}
 
   canvas{display:block; width:100%}
@@ -260,6 +261,7 @@
   <div class="seg"><span class="v" id="sCams">0</span><span class="k">cameras online</span></div>
   <div class="seg"><span class="v cyan" id="sWorkers">0</span><span class="k">workers in zones</span></div>
   <div class="seg"><span class="v green" id="sActive">0</span><span class="k">active</span></div>
+  <div class="seg"><span class="v" id="sNeutral">0</span><span class="k">neutral</span></div>
   <div class="seg"><span class="v orange" id="sIdle">0</span><span class="k">idle</span></div>
   <div class="seg"><span class="v red" id="sAlerts">0</span><span class="k">alerts · 24h</span></div>
 </div>
@@ -335,6 +337,7 @@ async function refresh(){
     $('sCams').textContent = stats.online + '/' + stats.cameras;
     $('sWorkers').textContent = stats.workers;
     $('sActive').textContent = stats.active;
+    $('sNeutral').textContent = stats.neutral ?? 0;
     $('sIdle').textContent = stats.idle;
     $('sAlerts').textContent = stats.alerts_24h;
     $('device').textContent = 'engine: ' + stats.device.toUpperCase();
@@ -377,6 +380,9 @@ function renderCams(cams){
       : `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
     if(c.processing !== false && c.at_machine !== undefined)
       ct += ` · ${c.at_machine} at machine`;
+    if(c.machines && c.machines.length)
+      ct += ' | ' + c.machines.map(m =>
+        `${m.name}: ${m.state === 'running' ? '▶ RUNNING' : '■ stopped'}`).join(' · ');
     el.querySelector('.ct').textContent = ct;
   }
 }
