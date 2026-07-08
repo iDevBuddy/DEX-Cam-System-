@@ -16,8 +16,8 @@ class AlertManager:
         self.cooldown = float(cfg.get("cooldown_seconds", 60))
         self.phone_cooldown = float(cfg.get("phone_cooldown_seconds", 30))
         self.unmanned_after = float(cfg.get("unmanned_after_seconds", 120))
-        self.idle_worker_after = float(cfg.get("idle_worker_seconds", 60))
         self.idle_worker_cooldown = float(cfg.get("idle_worker_cooldown_seconds", 300))
+        self.posture_cooldown = float(cfg.get("posture_cooldown_seconds", 600))
         self.last_fired: dict[str, float] = {}
         self.last_occupied = time.monotonic()
 
@@ -67,11 +67,21 @@ class AlertManager:
                 frame, self.phone_cooldown,
             )
 
-    def fire_idle_worker(self, who: str, idle_seconds: int, frame):
-        """Photo evidence of a worker who has been idle past the threshold.
+    def fire_idle_worker(self, who: str, idle_minutes: int, frame):
+        """Photo evidence of a worker who just crossed the idle threshold.
         Per-worker cooldown so one sleepy worker doesn't flood the log."""
         self._fire(
             "idle_worker",
-            f"Worker {who} idle for {idle_seconds}s on '{self.camera}'",
+            f"Worker {who} away from every machine for {idle_minutes} min on '{self.camera}'",
             frame, self.idle_worker_cooldown, key=f"idle_{who}",
+        )
+
+    def fire_posture(self, who: str, sitting_minutes: int, crop):
+        """Discipline layer: sitting at a machine past the allowed minutes.
+        The owner requires standing work at machines — photo is the worker's
+        own crop, same per-worker-cooldown style as idle alerts."""
+        self._fire(
+            "posture",
+            f"Worker {who} SITTING at a machine for {sitting_minutes} min on '{self.camera}'",
+            crop, self.posture_cooldown, key=f"posture_{who}",
         )
