@@ -67,11 +67,35 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS machine_states (
+    ts      REAL NOT NULL,
+    camera  TEXT NOT NULL,
+    machine TEXT NOT NULL,
+    state   TEXT NOT NULL,          -- 'running' | 'stopped' (change rows only)
+    energy  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_mstates ON machine_states (camera, machine, ts);
+
+CREATE TABLE IF NOT EXISTS machine_visits (
+    camera        TEXT NOT NULL,
+    machine       TEXT NOT NULL,
+    person_id     INTEGER,
+    display       TEXT,             -- W1 / P5 at the time of the visit
+    start_ts      REAL NOT NULL,
+    end_ts        REAL,
+    running_pct   REAL,             -- % of the visit the machine was RUNNING
+    sitting_pct   REAL,             -- % of the visit spent sitting (compliance)
+    switched_from TEXT              -- previous machine if this was a switch
+);
+CREATE INDEX IF NOT EXISTS idx_mvisits_end ON machine_visits (end_ts);
 """
 
 MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN person_id INTEGER",
     "ALTER TABLE sessions ADD COLUMN machine_pct REAL",
+    "ALTER TABLE sessions ADD COLUMN idle_pct REAL",
+    "ALTER TABLE sessions ADD COLUMN sit_machine_pct REAL",
 ]
 
 
@@ -82,11 +106,29 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
+def _backup_before_migration():
+    """One-time safety copy before the v2 schema migrations touch the file.
+    If anything goes wrong, backup_pre_v2.db still works with the old code."""
+    bak = DB_PATH.parent / "backup_pre_v2.db"
+    if not DB_PATH.exists() or bak.exists():
+        return
+    try:
+        import shutil
+        shutil.copy2(DB_PATH, bak)
+        for ext in ("-wal", "-shm"):
+            side = Path(str(DB_PATH) + ext)
+            if side.exists():
+                shutil.copy2(side, Path(str(bak) + ext))
+    except Exception:
+        pass  # backup failure must not block startup
+
+
 def start_writer():
     global _writer_started
     if _writer_started:
         return
     _writer_started = True
+    _backup_before_migration()
     con = _connect()
     con.executescript(SCHEMA)
     for mig in MIGRATIONS:
@@ -135,13 +177,84 @@ def log_alert(camera: str, alert_type: str, message: str, snapshot: str | None):
 
 def log_session(camera: str, track_id: int, start_ts: float, end_ts: float,
                 duration: float, active_pct: float, posture: str | None = None,
-                person_id: int | None = None, machine_pct: float | None = None):
+                person_id: int | None = None, machine_pct: float | None = None,
+                idle_pct: float | None = None,
+                sit_machine_pct: float | None = None):
     _write_q.put((
         "INSERT INTO sessions (camera, track_id, start_ts, end_ts, duration, "
-        "active_pct, posture, person_id, machine_pct) VALUES (?,?,?,?,?,?,?,?,?)",
+        "active_pct, posture, person_id, machine_pct, idle_pct, sit_machine_pct) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (camera, int(track_id), start_ts, end_ts, duration, active_pct, posture,
-         person_id, machine_pct),
+         person_id, machine_pct, idle_pct, sit_machine_pct),
     ))
+
+
+# ---------------- machines ----------------
+
+def log_machine_state(camera: str, machine: str, state: str, energy: float):
+    """One row per state CHANGE (not per second) — utilization is
+    reconstructed from these change points."""
+    _write_q.put((
+        "INSERT INTO machine_states (ts, camera, machine, state, energy) "
+        "VALUES (?,?,?,?,?)",
+        (time.time(), camera, machine, state, energy),
+    ))
+
+
+def log_machine_visit(camera: str, machine: str, person_id, display: str,
+                      start_ts: float, end_ts: float, running_pct: float,
+                      sitting_pct: float, switched_from: str | None):
+    _write_q.put((
+        "INSERT INTO machine_visits (camera, machine, person_id, display, "
+        "start_ts, end_ts, running_pct, sitting_pct, switched_from) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (camera, machine, person_id, display, start_ts, end_ts,
+         running_pct, sitting_pct, switched_from),
+    ))
+
+
+def machine_utilization(since: float) -> list[dict]:
+    """Running minutes per machine in the window, rebuilt from change rows.
+    A machine's state persists from each change row until the next one."""
+    now = time.time()
+    out = []
+    machines = query(
+        "SELECT DISTINCT camera, machine FROM machine_states")
+    for cam, mach in machines:
+        # State at the window start = last change before it (default stopped).
+        prev = query(
+            "SELECT state FROM machine_states WHERE camera=? AND machine=? "
+            "AND ts < ? ORDER BY ts DESC LIMIT 1", (cam, mach, since))
+        state = prev[0][0] if prev else "stopped"
+        t = since
+        running = 0.0
+        for (ts, st) in query(
+            "SELECT ts, state FROM machine_states WHERE camera=? AND machine=? "
+            "AND ts >= ? ORDER BY ts", (cam, mach, since)):
+            if state == "running":
+                running += ts - t
+            t, state = ts, st
+        if state == "running":
+            running += now - t
+        out.append({"camera": cam, "machine": mach,
+                    "running_min": round(running / 60, 1),
+                    "window_min": round((now - since) / 60, 1)})
+    return out
+
+
+def recent_machine_visits(since: float, limit: int = 20) -> list[dict]:
+    rows = query(
+        """SELECT camera, machine, display, start_ts, end_ts, running_pct,
+                  sitting_pct, switched_from
+           FROM machine_visits WHERE end_ts >= ?
+           ORDER BY end_ts DESC LIMIT ?""", (since, limit))
+    return [
+        {"camera": r[0], "machine": r[1], "worker": r[2] or "?",
+         "start": r[3], "end": r[4],
+         "minutes": round((r[4] - r[3]) / 60, 1),
+         "running_pct": r[5], "sitting_pct": r[6], "switched_from": r[7]}
+        for r in rows
+    ]
 
 
 def person_display(label: str | None, worker_no, person_id) -> str:
