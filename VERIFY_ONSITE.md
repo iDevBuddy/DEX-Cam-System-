@@ -1,121 +1,92 @@
-# VERIFY ON-SITE — kal cameras ke saath yeh check karna
+# VERIFY ON-SITE — kal subah cameras ke saath (updated 2026-07-09 shaam)
 
-> Diagnosis 2026-07-09 (cameras offline the). Root cause mil chuka hai —
-> **factory-cam-5 ka `process: false` hai** (config.yaml, aakhri camera ka
-> aakhri line). Neeche ke steps us fix ko live confirm karne ke liye hain.
+> Pichhli visit ka natija: cam-5 HARDWARE DEAD (DVR "NO VIDEO", cam-2
+> jaisa — dono electrician se checkwao, shared power/coax ka shak).
+> cam-1/3/4 detection verified. CPU 99.8% saturated tha → `infer_fps`
+> ab 1.0 hai + cam-5 `process: false`. Neeche kal ke steps.
 
 ## Pehle — 2 minute ka basic check
 
-- [ ] Laptop factory WiFi (Fine Artos) pe hai, `ping 192.168.100.34` chalta hai
-- [ ] Dashboard http://localhost:8000 — charon cameras ka dot GREEN (online)
-- [ ] cam-1/3/4 pe log dikhen to boxes aur labels aa rahe hain (yeh already
-      theek the — regression check)
+- [ ] Laptop factory WiFi (Fine Artos) pe, `ping 192.168.100.34` chalta hai
+- [ ] `python main.py` → startup log: cam-1/3/4 `AI processing ON`,
+      cam-5 `AI processing OFF <-- view only` (yeh jaan boojh ke OFF hai)
+- [ ] Dashboard http://localhost:8000 — cam-1/3/4 GREEN
 
-## Cam-5 fix ke baad (`process: true` ho chuka hai)
+## STEP A: CPU verify @ infer_fps 1.0 (pichhli dafa adhura)
 
-- [ ] Server start hote hi console mein har camera ki line dikhti hai:
-      `[startup] factory-cam-5: AI processing ON` — koi OFF to nahi?
-- [ ] Dashboard pe cam-5 ki line ab "live view only" ki jagah
-      `X workers · Y active · Z idle` dikhati hai
-- [ ] Cam-5 ke samne 2 bande khare karo → dono pe boxes + labels
-- [ ] Counts strip mein workers count barhta hai
+1.5 pe bhi 100% tha kyunke per-tick cost (0.68-0.83s) interval se bara
+tha — 1.0 pe interval 1.0s hai, ab girna chahiye. Cameras online hone ke
+10 min baad:
 
-## REQUIRED: Cam-5 ke machine zones banana (agle task ki dependency!)
+```
+typeperf "\Processor(_Total)\% Processor Time" -si 5 -sc 36
+```
 
-Naye active/idle rules machine zones pe chalte hain — cam-5 pe abhi
-KOI machine zone nahi hai, is liye wahan sirf posture/movement rule
-chal raha hai. Yeh step lazmi hai:
+- **CPU avg = ______ %** (target: 75-85%)
+- Agar phir bhi 95%+ → Claude ko batao: agla lever torch thread tuning
+  ya cam-4 per-camera fps hai (imgsz 448 REJECTED — accuracy tabah)
+- Dashboard smooth? Report button waqt pe chalta hai?
 
-1. Cam-5 ka ek saaf frame capture karo (koi bhi tareeqa):
+## STEP B: Machine zones ke asli naam (Akif frames dekh kar batayega)
+
+Workshop = engine rebuilding. Available naam:
+`lathe-big, lathe-small, engine-stand, cylinder-boring, crank-grinder,
+surface-facer (facer), grinder, drill`
+
+Workflow:
+1. Har AI camera ka annotated frame lo (zones drawn):
    ```
-   .venv\Scripts\python tools\detect_probe.py factory-cam-5 --seconds 5
+   .venv\Scripts\python tools\detect_probe.py factory-cam-1 --seconds 5
+   .venv\Scripts\python tools\detect_probe.py factory-cam-3 --seconds 5
+   .venv\Scripts\python tools\detect_probe.py factory-cam-4 --seconds 5
    ```
-   → `snapshots\probe_factory-cam-5_*.jpg` ban jayega
-2. Us photo mein dekho machines/kaam ki jagahen kahan hain
-3. Frame Claude ko do ("cam-5 ke machine zones draw karo") — ya khud
-   config.yaml mein cam-5 ke neeche `machine_zones:` add karo
-   (coordinates 0..1 normalized, jaise baqi cameras mein hain)
-4. Server restart → cam-5 ke video pe magenta zones machines pe
-   baith rahe hain? Worker machine pe khara ho to `ACTIVE @ <naam>`?
+   → `snapshots\probe_*.jpg` Claude ko dikhao / khud dekho
+2. Har zone ko naam do (e.g. "cam-4 left zone = lathe-big")
+3. Har rename ke liye — history split se bachne ke liye DONO:
+   ```
+   .venv\Scripts\python tools\rename_machine.py factory-cam-4 top-machine lathe-big
+   ```
+   (pehle `--dry-run` laga ke ginti dekh lo) **+ config.yaml mein zone
+   ka naam badlo** (Claude karega) → server restart
+4. Dashboard badges + reports naya naam dikhate hain (dono DB se aate
+   hain, rename tool ne history jor di)
 
-## REQUIRED: Machine RUNNING/STOPPED calibration (naya feature)
+Placeholder naam abhi: cam-1 `left-machine`/`right-machine`,
+cam-3 `engine-stand`/`bench-right`, cam-4 `top-machine`/`lathe`.
 
-Har AI camera pe probe chalao aur har machine ko ON aur OFF karwa kar
-`machines:` line ke energy numbers dekho (energy = zone ke kitne % pixels
-hil rahe hain):
+## STEP C: Machine RUNNING/STOPPED calibration (naam final hone ke BAAD)
+
+OFF baselines already pata hain: sab machines 0.0-0.27 energy.
+Ab har machine EK EK kar ke ON karwao:
 
 ```
 .venv\Scripts\python tools\detect_probe.py factory-cam-4 --seconds 30
 ```
 
-- Machine ON  → energy ~2-15 hona chahiye
-- Machine OFF → energy ~0-0.5
-- `machine_motion_threshold` (default 1.5) dono ke BEECH mein set karo;
-  kisi ek machine ke liye alag chahiye to us machine zone mein
-  `motion_threshold: X` likho
-- Dashboard/video pe zone ka rang: RUNNING = lime green, stopped = magenta
-- Agar koi machine chalti hui bhi 0 energy de (smooth rotation jo 2fps
-  pe invisible ho) to mujhe batao — us zone ka threshold/brightness
-  signal tune karoon ga. Worker ka ACTIVE is se kharab NAHI hota
-  (machine pe khara = active, chahe RUNNING ho ya stopped)
+- `machines:` line pe ON energy note karo (umeed: ~2-15)
+- Per-zone `motion_threshold` OFF-max aur ON-min ke beech, safety
+  margin ke saath (e.g. OFF 0.27, ON 4 → threshold ~1.5-2)
+- Zone rang: RUNNING = lime green, stopped = magenta
+- Koi machine chalti hui 0 energy de (smooth rotation, 1fps pe
+  invisible) → Claude ko batao, us zone ka signal tune hoga.
+  Worker ka ACTIVE is se kharab NAHI hota (machine pe khara = active)
 
-## REQUIRED: CPU load check (4 cameras AI ke saath, 5 minute)
+## STEP D: Workers re-approve (gallery reset hui thi)
 
-Ab pehli dafa CHAR cameras ek saath AI process kar rahe hain (pehle 3
-the). Load naapna zaroori hai:
+- [ ] People panel mein naye P# bante hain photo ke saath → Worker approve
+- [ ] Duplicate P# banay (kapre change / bura angle) → us card pe
+      **Duplicate?** dabao, phir asli card pe **✓ Yahan milao**
+      (NAYA merge button — ab UI mein hai, sirf API nahi)
 
-1. Charon cameras online + log kaam kar rahe hon (asli load)
-2. Yeh command 5 minute chalao (har 5 sec sample, 60 samples):
-   ```
-   typeperf "\Processor(_Total)\% Processor Time" -si 5 -sc 60
-   ```
-3. Average number yahan likho: **CPU avg = ______ %**
-4. Faisla:
-   - 75% se neeche → sab theek, kuch nahi karna
-   - 75-90% → cam-5 (ya kisi kam-zaroori camera) ki `infer_fps` per-camera
-     kam karne ka socho, ya imgsz 448
-   - 90%+ / laptop hang → foran batao, ek camera wapis view-only ya
-     model tuning karenge
-5. Sath mein dashboard use kar ke dekho — video streams atak to nahi
-   rahin, report button waqt pe chalta hai?
+## Electrician (jab aaye)
 
-## Probe tool — agar cam-5 pe boxes phir bhi na aayen
-
-Terminal mein (server chalta rehne do):
-
-```
-cd C:\Users\iakif\dexai-monitoring-demo
-.venv\Scripts\python tools\detect_probe.py factory-cam-5 --seconds 30
-```
-
-Yeh 30 second tak HAR raw detection print karega (0.05 conf tak) aur
-`snapshots\probe_factory-cam-5_*.jpg` mein annotated frame save karega
-(green = track shuru hoga, orange = sirf continue, red = bohot kamzor).
-
-**Summary ka matlab:**
-- `ZERO person detections` → model ko banda dikh hi nahi raha —
-  camera angle/roshni ka masla, config ka nahi
-- `would START a track: 0` magar `continue-only` mein numbers →
-  cam-5 ki `confidence` (abhi global 0.35) kam karni hai (masalan 0.25)
-- `dropped too-small` mein sab kuch → bande frame mein bohot chhote hain
-  (camera bohot door/wide) — camera ya zoom ka faisla
-- `OUTSIDE-zone` har jagah → zone polygon ghalat jagah hai (magar yeh
-  sirf counts rokta hai, boxes nahi)
-
-## Baqi cameras ke liye bhi (naya yolo11s pipeline pehli dafa live)
-
-- [ ] cam-3: baitha hua mechanic — bench pe baithne ke baad bhi track
-      zinda rehta hai? (walk-in pe box bane, baithne pe ORANGE ho jaye
-      magar ghayab NA ho)
-- [ ] cam-4: operator top-machine pe → `ACTIVE @ top-machine` label
-- [ ] Har camera ka ek annotated frame dekh kar machine zones (magenta)
-      asli machines pe baithte hain — nahi to coordinates batao, adjust
-      kar doon ga
-- [ ] People panel mein naye P-numbers bante hain, photo ke saath →
-      workers ko approve karo (purani gallery reset ho chuki hai)
-- [ ] Internet mile to: `git push` (commit 0bbcc62 pending hai)
+- [ ] cam-2 + cam-5 power/coax check (dono DVR pe "NO VIDEO"; July 6 pe
+      cam-5 zinda tha — 2-3 din mein mara, shared supply ka shak)
+- [ ] Camera zinda ho jaye → config.yaml mein cam-5 `process: true`
+      wapis + machine zones banana (frame capture → Claude)
+- [ ] DVR ki date/time bhi theek karwao (06-15 dikha raha tha)
 
 ## Agar kuch bhi ajeeb ho
 
-Probe ka output + `snapshots/probe_*.jpg` mujhe bhej do — exact bata
-doon ga masla detection ka hai, threshold ka, ya zone ka.
+Probe ka output + `snapshots/probe_*.jpg` Claude ko do — exact bata
+dega masla detection ka hai, threshold ka, ya zone ka.

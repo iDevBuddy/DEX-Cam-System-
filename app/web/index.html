@@ -206,6 +206,15 @@
   .mini:hover{background:var(--surface-2); color:var(--ink)}
   .mini.ok{border-color:rgba(63,214,140,.5); color:var(--green)}
   .mini.ok:hover{background:rgba(63,214,140,.12)}
+  .mini.warn{border-color:rgba(240,168,60,.5); color:var(--orange)}
+  .mini.warn:hover{background:rgba(240,168,60,.12)}
+  .mergebar{
+    display:flex; align-items:center; gap:10px; margin-bottom:8px;
+    padding:8px 10px; border:1px solid rgba(240,168,60,.45);
+    border-radius:8px; background:rgba(240,168,60,.08);
+    font-size:var(--fs-0); line-height:1.4;
+  }
+  .mergebar span{flex:1}
 
   /* ---------- modal ---------- */
   #modal{
@@ -282,6 +291,7 @@
 
     <div class="panel">
       <h3>People — AI ne pehchane</h3>
+      <div id="mergebar" class="mergebar" style="display:none"></div>
       <div id="people"><div class="empty">Jaise hi koi banda camera pe aayega, system usay yaad kar lega aur yahan photo ke saath dikhaega. Jo banda machines pe zyada time guzarega usay worker approve karo.</div></div>
     </div>
 
@@ -387,9 +397,21 @@ function renderCams(cams){
   }
 }
 
+let mergeFrom = null;   // {id, display} — duplicate jo kisi aur mein milna hai
+
 function renderPeople(people){
   const box = $('people');
   if(!people.length) return;
+  // Duplicate ghayab ho gaya (merge/cleanup) to mode khud cancel
+  if(mergeFrom && !people.some(p=>p.id===mergeFrom.id)) mergeFrom = null;
+  const bar = $('mergebar');
+  if(mergeFrom){
+    bar.style.display = 'flex';
+    bar.innerHTML = `<span><b>${mergeFrom.display}</b> duplicate select hai — ab us
+      bande ke card pe <b>✓ Yahan milao</b> dabao jo ASLI hai (usi ka W#/history
+      rahega, ${mergeFrom.display} khatam ho jayega — wapis nahi hota)</span>
+      <button class="mini" onclick="cancelMerge()">Cancel</button>`;
+  } else { bar.style.display = 'none'; bar.innerHTML = ''; }
   box.innerHTML = people.map(p=>{
     const tag = p.label==='worker' ? '<span class="tag worker">worker</span>'
               : p.label==='visitor' ? '<span class="tag visitor">visitor</span>'
@@ -400,14 +422,23 @@ function renderPeople(people){
     const live = p.live
       ? `<b>abhi ${p.live.camera} pe — ${p.live.state}${p.live.machine ? ' @ '+p.live.machine : ''}</b>`
       : '';
-    const acts = p.label==='unknown'
-      ? `<div class="acts">
+    let acts;
+    if(mergeFrom){
+      acts = p.id===mergeFrom.id
+        ? `<div class="acts"><button class="mini" onclick="cancelMerge()">Cancel</button></div>`
+        : `<div class="acts"><button class="mini ok" onclick="doMerge(${p.id})">✓ Yahan milao</button></div>`;
+    } else if(p.label==='unknown'){
+      acts = `<div class="acts">
            <button class="mini ok" onclick="labelPerson(${p.id},'worker')">✓ Worker</button>
            <button class="mini" onclick="labelPerson(${p.id},'visitor')">Visitor</button>
-         </div>`
-      : `<div class="acts">
-           <button class="mini" onclick="labelPerson(${p.id},'unknown')">Undo</button>
+           <button class="mini warn" onclick="startMerge(${p.id},'${p.display}')" title="Yeh usi bande ka duplicate ID hai">Duplicate?</button>
          </div>`;
+    } else {
+      acts = `<div class="acts">
+           <button class="mini" onclick="labelPerson(${p.id},'unknown')">Undo</button>
+           <button class="mini warn" onclick="startMerge(${p.id},'${p.display}')" title="Yeh usi bande ka duplicate ID hai">Duplicate?</button>
+         </div>`;
+    }
     return `<div class="person${p.candidate ? ' candidate':''}">
       ${img}
       <div class="info">
@@ -417,6 +448,22 @@ function renderPeople(people){
       ${acts}
     </div>`;
   }).join('');
+}
+
+function startMerge(id, display){ mergeFrom = {id, display}; refreshSlow(); }
+function cancelMerge(){ mergeFrom = null; refreshSlow(); }
+
+async function doMerge(keep){
+  const absorb = mergeFrom.id, dupName = mergeFrom.display;
+  mergeFrom = null;
+  const r = await fetch(`/api/persons/${keep}/merge/${absorb}`, {method:'POST'});
+  if(r.ok){
+    toast(`${dupName} merge ho gaya — history jor di gayi`);
+  } else {
+    const e = await r.json().catch(()=>({}));
+    toast(e.detail || 'Merge failed');
+  }
+  refreshSlow();
 }
 
 async function labelPerson(id, label){

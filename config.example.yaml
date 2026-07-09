@@ -7,7 +7,9 @@ inference:
   # Track START threshold. Detection runs down to 0.12 internally; weak
   # detections keep existing tracks alive (two-threshold tracking).
   confidence: 0.35
-  infer_fps: 2          # AI passes per second per camera (video stays smooth)
+  infer_fps: 2          # AI passes per second per camera (video stays smooth).
+                        # CPU-only + 3-4 cameras => use 1.0 (rules are
+                        # time-based; nothing breaks at lower fps)
   imgsz: 512            # 640 on GPU builds
   use_reid: true        # OSNet person re-identification (persistent worker IDs)
   enhance: true         # auto gamma/CLAHE on dark or washed-out frames
