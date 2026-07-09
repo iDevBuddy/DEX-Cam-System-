@@ -66,6 +66,7 @@ def list_cameras():
             "source": w.source_str,
             "status": w.status,
             "processing": w.process_enabled,
+            "ai_paused": w.ai_paused,
             "max_workers": w.zone.max_workers,
             "live_ids": sorted({i["display"] for i in w.live.values()
                                 if i["display"] != "..."}),

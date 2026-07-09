@@ -387,10 +387,12 @@ function renderCams(cams){
     el.querySelector('.nm').textContent = c.name;
     let ct = c.processing === false
       ? 'live view only'
+      : c.ai_paused
+      ? 'AI paused — no signal'
       : `${c.workers} workers · ${c.active} active · ${c.idle} idle`;
-    if(c.processing !== false && c.at_machine !== undefined)
+    if(c.processing !== false && !c.ai_paused && c.at_machine !== undefined)
       ct += ` · ${c.at_machine} at machine`;
-    if(c.machines && c.machines.length)
+    if(!c.ai_paused && c.machines && c.machines.length)
       ct += ' | ' + c.machines.map(m =>
         `${m.name}: ${m.state === 'running' ? '▶ RUNNING' : '■ stopped'}`).join(' · ');
     el.querySelector('.ct').textContent = ct;

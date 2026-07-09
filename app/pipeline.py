@@ -54,13 +54,34 @@ DETECT_FLOOR = 0.12       # detector floor; never used to create tracks
 PHONE_CONF = 0.35         # phones still need a confident detection
 DISPLAY_FPS = 8.0         # smooth video between (slower) AI passes
 
-# Object filter: a "person" is reclassified as an object ONLY when every one
-# of these holds for a full minute — pose never found, literally zero pixel
-# movement, and weak detector confidence. Any single movement or one
-# successful pose check makes the track immune for life.
-OBJECT_AFTER = 60.0
-OBJECT_MAX_CONF = 0.45    # track's PEAK YOLO confidence stays below this
-OBJECT_MOVE_PX = 0.004    # movement above this fraction of width = human
+# Auto-pause on dead camera: a dead DVR channel either stops delivering
+# frames (already handled as "reconnecting") or keeps serving a bit-identical
+# "NO VIDEO" placeholder. If the picture doesn't CHANGE for PAUSE_AFTER, AI
+# pauses itself and resumes the moment a live picture is back. Change =
+# fraction of pixels that moved, so the DVR's ticking clock overlay (a few
+# dozen pixels) doesn't count as life, while real sensor/compression noise
+# (spread over the frame) does.
+PAUSE_AFTER = 300.0       # s of frozen picture -> AI pauses itself
+SIG_SAMPLE = 2.0          # s between picture-change samples
+SIG_PIX_DELTA = 6         # gray-level delta for one pixel to count as changed
+SIG_CHANGED_FRAC = 0.005  # >0.5% of pixels changed = picture is alive
+
+# Object filter: a "person" is reclassified as an object when it stays weak
+# (peak conf below OBJECT_MAX_CONF), pose is never found, and it does not
+# move for OBJECT_AFTER — or, new, when it lives OBJECT_AFTER_JITTERY without
+# EVER producing real human evidence, even if its box jitters (machine
+# vibration / bbox noise used to grant lifetime immunity from one jiggle —
+# the phantom-immunity bug). Lifetime immunity now needs real evidence:
+# locomotion, a repeated pose, or one strong detection. Small jitter only
+# defers the zero-movement clock (protects a fidgeting night worker whose
+# pose MediaPipe can't find) and never grants immunity.
+OBJECT_AFTER = 60.0        # s with zero movement -> suspect
+OBJECT_AFTER_JITTERY = 600.0  # s alive with no evidence at all -> suspect
+OBJECT_MAX_CONF = 0.45     # track's PEAK YOLO confidence stays below this
+OBJECT_MOVE_PX = 0.004     # above this fraction of width = "did move" (defers clock)
+WALK_SPREAD_PX = 0.012     # locomotion-level spread = instant lifetime immunity
+POSE_EVIDENCE = 2          # pose found in this many samples (2s+ apart) = immunity
+CONF_EVIDENCE = 0.50       # one detection this strong = immunity (phantoms never)
 
 
 class CameraWorker(threading.Thread):
@@ -99,6 +120,11 @@ class CameraWorker(threading.Thread):
         self.activity = ActivityTracker(act)   # movement memory (object filter)
         self.alerts = AlertManager(name, cfg["alerts"])
         self.status = "starting"
+        # Auto-pause (see PAUSE_AFTER above)
+        self.ai_paused = False
+        self._sig_prev = None                   # last 96x96 gray sample
+        self._sig_prev_ts = 0.0
+        self._sig_change_ts = time.monotonic()  # picture last changed
         self.counts = {"workers": 0, "active": 0, "neutral": 0, "idle": 0,
                        "at_machine": 0}
         self.live: dict[int, dict] = {}
@@ -137,6 +163,8 @@ class CameraWorker(threading.Thread):
         self._t_conf: dict[int, list] = {}
         self._t_human: set[int] = set()
         self._suspect: set[int] = set()
+        self._t_last_move: dict[int, float] = {}  # last small-jitter movement
+        self._t_pose_ev: dict[int, tuple] = {}    # tid -> (pose hits, last ts)
 
     # ---------------- main loop ----------------
 
@@ -163,8 +191,12 @@ class CameraWorker(threading.Thread):
 
             t0 = time.monotonic()
             try:
+                if self.process_enabled:
+                    self._signal_check(frame, t0)
                 if not self.process_enabled:
                     self._encode_view_only(frame)
+                elif self.ai_paused:
+                    self._encode_paused(frame)
                 elif t0 >= next_infer:
                     next_infer = t0 + interval
                     self._process(frame)
@@ -544,14 +576,32 @@ class CameraWorker(threading.Thread):
             if tid in self._t_human:
                 continue
             spread = self.activity.spread(tid)
-            moved = spread is not None and spread > OBJECT_MOVE_PX * w
-            if moved or postures.get(tid) is not None:
-                self._t_human.add(tid)
-                self._suspect.discard(tid)
+            # Lifetime immunity: locomotion or one strong detection.
+            if ((spread is not None and spread > WALK_SPREAD_PX * w)
+                    or float(conf) >= CONF_EVIDENCE):
+                self._grant_human(tid)
                 continue
-            if (now - self._t_first[tid] >= OBJECT_AFTER
-                    and peak[0] < OBJECT_MAX_CONF):
+            # Pose immunity needs POSE_EVIDENCE hits 2s+ apart — a single
+            # MediaPipe hallucination on machinery no longer counts.
+            if postures.get(tid) is not None:
+                cnt, last = self._t_pose_ev.get(tid, (0, 0.0))
+                if now - last >= 2.0:
+                    cnt += 1
+                    self._t_pose_ev[tid] = (cnt, now)
+                if cnt >= POSE_EVIDENCE:
+                    self._grant_human(tid)
+                    continue
+            # Small jitter defers the zero-movement clock, nothing more.
+            if spread is not None and spread > OBJECT_MOVE_PX * w:
+                self._t_last_move[tid] = now
+            still_since = self._t_last_move.get(tid, self._t_first[tid])
+            is_object = peak[0] < OBJECT_MAX_CONF and (
+                now - still_since >= OBJECT_AFTER
+                or now - self._t_first[tid] >= OBJECT_AFTER_JITTERY)
+            if is_object:
                 self._suspect.add(tid)
+            else:
+                self._suspect.discard(tid)
         live = set(raw_ids)
         for tid in [t for t in self._t_first
                     if t not in live and now - self._t_first[t] > 60.0]:
@@ -559,6 +609,14 @@ class CameraWorker(threading.Thread):
             self._t_conf.pop(tid, None)
             self._t_human.discard(tid)
             self._suspect.discard(tid)
+            self._t_last_move.pop(tid, None)
+            self._t_pose_ev.pop(tid, None)
+
+    def _grant_human(self, tid: int):
+        self._t_human.add(tid)
+        self._suspect.discard(tid)
+        self._t_pose_ev.pop(tid, None)
+        self._t_last_move.pop(tid, None)
 
     # ---------------- drawing ----------------
 
@@ -660,6 +718,43 @@ class CameraWorker(threading.Thread):
         cv2.putText(out, f"{self.cam_name}  |  LIVE VIEW", (10, 21),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
         self._encode(out)
+
+    def _encode_paused(self, frame):
+        out = frame.copy()
+        h, w = out.shape[:2]
+        cv2.rectangle(out, (0, 0), (w, 30), (25, 25, 25), -1)
+        cv2.putText(out, f"{self.cam_name}  |  AI PAUSED - no signal", (10, 21),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, ORANGE, 1, cv2.LINE_AA)
+        self._encode(out)
+
+    # ---------------- signal watchdog (auto-pause) ----------------
+
+    def _signal_check(self, frame, now: float):
+        """Freeze detector: pause AI on a picture that hasn't changed for
+        PAUSE_AFTER (dead channel placeholder), resume as soon as it moves."""
+        if now - self._sig_prev_ts >= SIG_SAMPLE:
+            small = cv2.cvtColor(cv2.resize(frame, (96, 96)), cv2.COLOR_BGR2GRAY)
+            if self._sig_prev is None:
+                self._sig_change_ts = now
+            else:
+                diff = cv2.absdiff(small, self._sig_prev)
+                changed = float(np.mean(diff > SIG_PIX_DELTA))
+                if changed > SIG_CHANGED_FRAC:
+                    self._sig_change_ts = now
+            self._sig_prev = small
+            self._sig_prev_ts = now
+        frozen = (now - self._sig_change_ts) >= PAUSE_AFTER
+        if frozen and not self.ai_paused:
+            self.ai_paused = True
+            self.counts = {k: 0 for k in self.counts}
+            self.live = {}
+            self._last_draw = None
+            print(f"[signal] {self.cam_name}: picture frozen "
+                  f"{int(PAUSE_AFTER / 60)} min — AI paused (auto-resumes "
+                  "when the signal returns)")
+        elif self.ai_paused and not frozen:
+            self.ai_paused = False
+            print(f"[signal] {self.cam_name}: signal back — AI resumed")
 
     def _set_offline_frame(self):
         img = np.zeros((360, 640, 3), dtype=np.uint8)

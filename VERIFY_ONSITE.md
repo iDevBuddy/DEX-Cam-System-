@@ -1,16 +1,19 @@
-# VERIFY ON-SITE — kal subah cameras ke saath (updated 2026-07-09 shaam)
+# VERIFY ON-SITE — kal subah cameras ke saath (updated 2026-07-09 raat)
 
 > Pichhli visit ka natija: cam-5 HARDWARE DEAD (DVR "NO VIDEO", cam-2
 > jaisa — dono electrician se checkwao, shared power/coax ka shak).
 > cam-1/3/4 detection verified. CPU 99.8% saturated tha → `infer_fps`
-> ab 1.0 hai + cam-5 `process: false`. Neeche kal ke steps.
+> ab 1.0 hai. cam-5 pe manual flag NAHI — naya AUTO-PAUSE hai: picture
+> 5 min frozen (dead channel ka placeholder) → AI khud ruk jati hai,
+> signal wapis → khud chalu. Neeche kal ke steps.
 
 ## Pehle — 2 minute ka basic check
 
 - [ ] Laptop factory WiFi (Fine Artos) pe, `ping 192.168.100.34` chalta hai
-- [ ] `python main.py` → startup log: cam-1/3/4 `AI processing ON`,
-      cam-5 `AI processing OFF <-- view only` (yeh jaan boojh ke OFF hai)
+- [ ] `python main.py` → startup log: charon cameras `AI processing ON`
 - [ ] Dashboard http://localhost:8000 — cam-1/3/4 GREEN
+- [ ] ~5-6 min baad cam-5 ki line **"AI paused — no signal"** dikhati hai
+      (auto-pause ka live saboot; console mein `[signal]` line bhi aayegi)
 
 ## STEP A: CPU verify @ infer_fps 1.0 (pichhli dafa adhura)
 

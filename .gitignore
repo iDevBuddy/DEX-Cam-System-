@@ -9,3 +9,7 @@ reports/
 sample.mp4
 *.log
 .impeccable/
+clips/
+graphify-out/
+models/yolo11m.pt
+models/*_openvino_model/
