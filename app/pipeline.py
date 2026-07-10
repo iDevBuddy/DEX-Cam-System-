@@ -131,6 +131,12 @@ class CameraWorker(threading.Thread):
         self.stop_event = threading.Event()
         self._jpeg_lock = threading.Lock()
         self._latest_jpeg: bytes | None = None
+        # Debug overlay (?debug=1 on the stream): rendered only while at
+        # least one debug viewer is connected — zero cost otherwise.
+        self.debug_viewers = 0
+        self._latest_debug_jpeg: bytes | None = None
+        self._last_raw_dets: list[tuple] = []   # (x1,y1,x2,y2,conf,too_small)
+        self._t_lastconf: dict[int, float] = {}
         self._last_draw = None
         self._last_db_log = 0.0
         self._count_hist = {k: deque(maxlen=5) for k in self.counts}
@@ -234,6 +240,14 @@ class CameraWorker(threading.Thread):
         phones = det[det.class_id == detector.CELL_PHONE]
         phones = phones[phones.confidence >= PHONE_CONF]
 
+        # Every raw person detection, kept for the debug overlay/API before
+        # any filter can hide it.
+        self._last_raw_dets = [
+            (float(x1), float(y1), float(x2), float(y2), float(c),
+             (y2 - y1) < 0.05 * h)
+            for (x1, y1, x2, y2), c in zip(persons.xyxy, persons.confidence)
+        ] if len(persons) else []
+
         # Drop implausibly small "people" (far-away noise, reflections).
         if len(persons) > 0:
             heights = persons.xyxy[:, 3] - persons.xyxy[:, 1]
@@ -242,6 +256,9 @@ class CameraWorker(threading.Thread):
         tracked = self.tracker.update_with_detections(persons)
         raw_ids = [int(r) for r in (
             tracked.tracker_id if tracked.tracker_id is not None else [])]
+        if tracked.confidence is not None:
+            self._t_lastconf = {int(t): float(c) for t, c in
+                                zip(raw_ids, tracked.confidence)}
 
         # Machine RUNNING/STOPPED — measured with people cut out of the ROI.
         mstates = self.mstate.update(frame, tracked.xyxy) if self.mstate else {}
@@ -315,6 +332,8 @@ class CameraWorker(threading.Thread):
                            phones.xyxy.copy(), dict(at_machine), dict(sitting),
                            dict(mstates), dict(self._tstate_public(now)))
         annotated = self._annotate(frame, *self._last_draw, w=w, h=h)
+        if self.debug_viewers > 0:
+            self._encode_debug(annotated)
         self.alerts.check(self.counts["workers"], self.zone.max_workers,
                           len(phones), annotated)
         for tid in idle_alerts:
@@ -443,7 +462,9 @@ class CameraWorker(threading.Thread):
     def _label(self, tid: int) -> str:
         if self.reid:
             pid = self._t_person.get(tid)
-            return self.reid.display(pid) if pid is not None else "..."
+            # No identity yet (crop too small for re-id, or still pending)
+            # => temporary ID. The person is tracked/classified regardless.
+            return self.reid.display(pid) if pid is not None else f"T{tid}"
         return f"W{self._display.get(tid, tid)}"
 
     def _update_identity(self, frame, tracked, raw_ids, w, h):
@@ -762,6 +783,38 @@ class CameraWorker(threading.Thread):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2, cv2.LINE_AA)
         self._encode(img)
 
+    def _encode_debug(self, annotated):
+        """Annotated frame + EVERY raw YOLO detection with its confidence:
+        yellow = starts a track, orange = continue-only (below start bar),
+        grey = dropped too-small. Legend shows this camera's thresholds."""
+        out = annotated.copy()
+        h, w = out.shape[:2]
+        for x1, y1, x2, y2, conf, small in self._last_raw_dets:
+            if small:
+                color, tag = (140, 140, 140), "small"
+            elif conf >= self.conf:
+                color, tag = (60, 220, 255), "start"
+            else:
+                color, tag = (0, 165, 255), "weak"
+            p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
+            cv2.rectangle(out, p1, p2, color, 1)
+            cv2.putText(out, f"{conf:.2f} {tag}", (p1[0], max(12, p1[1] - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        legend = (f"DEBUG raw dets={len(self._last_raw_dets)} | "
+                  f"floor {DETECT_FLOOR} | start bar {self.conf} | "
+                  "yellow=start orange=weak grey=small")
+        cv2.rectangle(out, (0, h - 26), (w, h), (25, 25, 25), -1)
+        cv2.putText(out, legend, (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (240, 240, 240), 1, cv2.LINE_AA)
+        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            with self._jpeg_lock:
+                self._latest_debug_jpeg = buf.tobytes()
+
     def latest_jpeg(self) -> bytes | None:
         with self._jpeg_lock:
             return self._latest_jpeg
+
+    def latest_debug_jpeg(self) -> bytes | None:
+        with self._jpeg_lock:
+            return self._latest_debug_jpeg or self._latest_jpeg

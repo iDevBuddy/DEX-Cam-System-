@@ -68,8 +68,7 @@ def list_cameras():
             "processing": w.process_enabled,
             "ai_paused": w.ai_paused,
             "max_workers": w.zone.max_workers,
-            "live_ids": sorted({i["display"] for i in w.live.values()
-                                if i["display"] != "..."}),
+            "live_ids": sorted({i["display"] for i in w.live.values()}),
             "machines": [
                 {"name": n, **s} for n, s in
                 (w.mstate.states.items() if w.mstate else [])
@@ -109,20 +108,53 @@ def remove_camera(name: str):
 # ---------------- video ----------------
 
 @app.get("/stream/{name}")
-def stream(name: str):
+def stream(name: str, debug: int = 0):
+    """MJPEG stream; ?debug=1 overlays every raw YOLO detection with its
+    confidence (rendered only while a debug viewer is connected)."""
     if name not in workers:
         raise HTTPException(404, "No such camera")
 
     def gen():
-        while name in workers:
-            jpg = workers[name].latest_jpeg()
-            if jpg:
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
-                       b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n"
-                       + jpg + b"\r\n")
-            time.sleep(0.15)
+        w = workers[name]
+        if debug:
+            w.debug_viewers += 1
+        try:
+            while name in workers:
+                jpg = w.latest_debug_jpeg() if debug else w.latest_jpeg()
+                if jpg:
+                    yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
+                           b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n"
+                           + jpg + b"\r\n")
+                time.sleep(0.15)
+        finally:
+            if debug:
+                w.debug_viewers = max(0, w.debug_viewers - 1)
 
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.get("/api/debug/{name}")
+def debug_info(name: str):
+    """What the model sees vs what gets tracked, one AI pass."""
+    if name not in workers:
+        raise HTTPException(404, "No such camera")
+    w = workers[name]
+    return {
+        "thresholds": {"detect_floor": 0.12, "start_bar": w.conf},
+        "debug_viewers": w.debug_viewers,
+        "has_debug_frame": w._latest_debug_jpeg is not None,
+        "raw_detections": [
+            {"box": [round(v, 1) for v in (x1, y1, x2, y2)],
+             "conf": round(c, 3), "too_small": small}
+            for x1, y1, x2, y2, c, small in w._last_raw_dets
+        ],
+        "tracks": [
+            {"tid": tid, "display": i["display"], "state": i["state"],
+             "machine": i["machine"],
+             "conf": round(w._t_lastconf.get(tid, -1), 3)}
+            for tid, i in w.live.items()
+        ],
+    }
 
 
 # ---------------- alerts & stats ----------------
