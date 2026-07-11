@@ -244,7 +244,7 @@ class CameraWorker(threading.Thread):
         # any filter can hide it.
         self._last_raw_dets = [
             (float(x1), float(y1), float(x2), float(y2), float(c),
-             (y2 - y1) < 0.05 * h)
+             bool((y2 - y1) < 0.05 * h))
             for (x1, y1, x2, y2), c in zip(persons.xyxy, persons.confidence)
         ] if len(persons) else []
 

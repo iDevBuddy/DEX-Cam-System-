@@ -133,6 +133,16 @@ def stream(name: str, debug: int = 0):
     return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
+def _track_box(w, tid):
+    if not w._last_draw:
+        return None
+    boxes, raw_ids = w._last_draw[0], w._last_draw[1]
+    for b, t in zip(boxes, raw_ids):
+        if t == tid:
+            return [round(float(v), 1) for v in b]
+    return None
+
+
 @app.get("/api/debug/{name}")
 def debug_info(name: str):
     """What the model sees vs what gets tracked, one AI pass."""
@@ -151,7 +161,8 @@ def debug_info(name: str):
         "tracks": [
             {"tid": tid, "display": i["display"], "state": i["state"],
              "machine": i["machine"],
-             "conf": round(w._t_lastconf.get(tid, -1), 3)}
+             "conf": round(w._t_lastconf.get(tid, -1), 3),
+             "box": _track_box(w, tid)}
             for tid, i in w.live.items()
         ],
     }
